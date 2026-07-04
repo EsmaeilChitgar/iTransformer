@@ -5,6 +5,16 @@ from experiments.exp_long_term_forecasting_partial import Exp_Long_Term_Forecast
 import random
 import numpy as np
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', '1', 'y'):
+        return True
+    if v.lower() in ('no', 'false', 'f', '0', 'n'):
+        return False
+    raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
 if __name__ == '__main__':
     fix_seed = 2023
     random.seed(fix_seed)
@@ -17,11 +27,11 @@ if __name__ == '__main__':
     parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
     parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
     parser.add_argument('--model', type=str, required=True, default='iTransformer',
-                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer]')
+                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer, iSparseTransformer]')
 
     # data loader
     parser.add_argument('--data', type=str, required=True, default='custom', help='dataset type')
-    parser.add_argument('--root_path', type=str, default='./data/electricity/', help='root path of the data file')
+    parser.add_argument('--root_path', type=str, default='./dataset/electricity/', help='root path of the data file')
     parser.add_argument('--data_path', type=str, default='electricity.csv', help='data csv file')
     parser.add_argument('--features', type=str, default='M',
                         help='forecasting task, options:[M, S, MS]; M:multivariate predict multivariate, S:univariate predict univariate, MS:multivariate predict univariate')
@@ -86,6 +96,28 @@ if __name__ == '__main__':
     parser.add_argument('--use_norm', type=int, default=True, help='use norm and denorm')
     parser.add_argument('--partial_start_index', type=int, default=0, help='the start index of variates for partial training, '
                                                                            'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
+
+    # parser.add_argument('--attn_type', type=str, default='lvsa', choices=['full', 'lvsa'], help='attention type: full or lvsa')
+    # parser.add_argument('--use_memory', type=str2bool, default=True, help='whether to use memory attention')
+
+    # Sparse Variable Attention (iSparseTransformer): adaptively selects a subset
+    # of variable tokens before each self-attention layer to reduce the O(D^2)
+    # cross-variate attention cost. Only takes effect with --model iSparseTransformer.
+    parser.add_argument('--sparse_var_attn', action='store_true', default=False,
+                        help='enable sparse variable attention (reduces O(D^2) variate attention)')
+    parser.add_argument('--var_select_mode', type=str, default='kv_select',
+                        choices=['kv_select', 'topk', 'soft'],
+                        help='kv_select: O(D*K) all queries attend to top-K keys; '
+                             'topk: O(K^2) only top-K tokens attend; soft: O(D^2) differentiable reference')
+    parser.add_argument('--var_select_k', type=float, default=0.25,
+                        help='selection budget: ratio of D if in (0,1], else absolute count')
+    parser.add_argument('--var_select_estimator', type=str, default='mlp',
+                        choices=['linear', 'mlp', 'se'],
+                        help='variable importance estimator type')
+    parser.add_argument('--var_select_temp', type=float, default=0.1,
+                        help='temperature of the straight-through top-K sigmoid relaxation')
+    parser.add_argument('--var_select_reg', type=float, default=0.01,
+                        help='weight of the selection budget+entropy regularizer added to the training loss')
 
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False

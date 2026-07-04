@@ -36,6 +36,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         criterion = nn.MSELoss()
         return criterion
 
+    def _selection_reg_loss(self):
+        """Selection regularization from iSparseTransformer (0 if disabled).
+
+        Handles optional DataParallel wrapping.
+        """
+        model = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
+        reg = getattr(model, 'selection_reg_loss', 0.0)
+        if isinstance(reg, torch.Tensor):
+            return reg.to(self.device)
+        return reg
+
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
         self.model.eval()
@@ -133,6 +144,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
                         batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                         loss = criterion(outputs, batch_y)
+                        loss = loss + self.args.var_select_reg * self._selection_reg_loss()
                         train_loss.append(loss.item())
                 else:
                     if self.args.output_attention:
@@ -144,6 +156,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                     loss = criterion(outputs, batch_y)
+                    loss = loss + self.args.var_select_reg * self._selection_reg_loss()
                     train_loss.append(loss.item())
 
                 if (i + 1) % 100 == 0:
