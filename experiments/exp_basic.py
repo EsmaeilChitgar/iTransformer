@@ -1,7 +1,7 @@
 import os
 import torch
 from model import Transformer, Informer, Reformer, Flowformer, Flashformer, \
-    iTransformer, iTransformer_NormLin, iInformer, iReformer, iFlowformer, iFlashformer
+    iTransformer, iTransformer_NormLin, iTransformer_OrthoNormLin, iInformer, iReformer, iFlowformer, iFlashformer
 
 
 class Exp_Basic(object):
@@ -15,6 +15,7 @@ class Exp_Basic(object):
             'Flashformer': Flashformer,
             'iTransformer': iTransformer,
             'iTransformer_NormLin': iTransformer_NormLin,
+            'iTransformer_OrthoNormLin': iTransformer_OrthoNormLin,
             'iInformer': iInformer,
             'iReformer': iReformer,
             'iFlowformer': iFlowformer,

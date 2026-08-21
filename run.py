@@ -1,4 +1,5 @@
 import argparse
+import os
 import torch
 from experiments.exp_long_term_forecasting import Exp_Long_Term_Forecast
 from experiments.exp_long_term_forecasting_partial import Exp_Long_Term_Forecast_Partial
@@ -16,8 +17,8 @@ if __name__ == '__main__':
     # basic config
     parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
     parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
-    parser.add_argument('--model', type=str, required=True, default='iTransformer_NormLin',
-                        help='model name, options: [iTransformer, iTransformer_NormLin, iInformer, iReformer, iFlowformer, iFlashformer]')
+    parser.add_argument('--model', type=str, required=True, default='iTransformer_OrthoNormLin',
+                        help='model name, options: [iTransformer, iTransformer_NormLin, iTransformer_OrthoNormLin, iInformer, iReformer, iFlowformer, iFlashformer]')
 
     # data loader
     parser.add_argument('--data', type=str, required=True, default='custom', help='dataset type')
@@ -86,8 +87,69 @@ if __name__ == '__main__':
     parser.add_argument('--use_norm', type=int, default=True, help='use norm and denorm')
     parser.add_argument('--partial_start_index', type=int, default=0, help='the start index of variates for partial training, '
                                                                            'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
+    parser.add_argument('--embed_size',type=int,default=8)
 
     args = parser.parse_args()
+
+    # ------------------------------------------------------------
+    # Determine the Ortho Q-matrix folder from root_path / data_path.
+    # Do NOT use args.data here because it is normally "custom".
+    # ------------------------------------------------------------
+
+    root_folder = os.path.basename(
+        os.path.normpath(args.root_path)
+    )
+
+    # Folder names in data/ are not always identical to folders in dataset/ortho.
+    ROOT_TO_ORTHO_DATASET = {
+        'electricity': 'ECL',
+        'exchange_rate': 'Exchange',
+        'traffic': 'Traffic',
+        'weather': 'Weather',
+        'illness': 'ILI',
+    }
+
+    if root_folder == 'ETT-small':
+        # All ETT files live in the same root folder,
+        # so identify the exact dataset from its CSV filename.
+        ortho_dataset = os.path.splitext(
+            os.path.basename(args.data_path)
+        )[0]
+    else:
+        try:
+            ortho_dataset = ROOT_TO_ORTHO_DATASET[root_folder]
+        except KeyError:
+            raise ValueError(
+                f'Unsupported root_path: {args.root_path}. '
+                f'Expected one of: {list(ROOT_TO_ORTHO_DATASET)} or ETT-small.'
+            )
+
+    ortho_root = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        'data',
+        'ortho',
+        ortho_dataset
+    )
+
+    args.q_mat_file = os.path.join(
+        ortho_root,
+        f'Q_{args.seq_len}.npy'
+    )
+
+    args.q_out_mat_file = os.path.join(
+        ortho_root,
+        f'Q_{args.pred_len}.npy'
+    )
+
+    if not os.path.isfile(args.q_mat_file):
+        raise FileNotFoundError(f'Q matrix not found: {args.q_mat_file}')
+
+    if not os.path.isfile(args.q_out_mat_file):
+        raise FileNotFoundError(f'Q_out matrix not found: {args.q_out_mat_file}')
+
+    print(f'Q matrix     : {args.q_mat_file}')
+    print(f'Q out matrix : {args.q_out_mat_file}')
+
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
 
     if args.use_gpu and args.use_multi_gpu:
