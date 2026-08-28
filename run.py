@@ -16,8 +16,8 @@ if __name__ == '__main__':
     # basic config
     parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
     parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
-    parser.add_argument('--model', type=str, required=True, default='iTransformer',
-                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer]')
+    parser.add_argument('--model', type=str, required=True, default='iMultiScalePatchTransformer',
+                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer, iMultiScalePatchTransformer]')
 
     # data loader
     parser.add_argument('--data', type=str, required=True, default='custom', help='dataset type')
@@ -85,7 +85,13 @@ if __name__ == '__main__':
     parser.add_argument('--efficient_training', type=bool, default=False, help='whether to use efficient_training (exp_name should be partial train)') # See Figure 8 of our paper for the detail
     parser.add_argument('--use_norm', type=int, default=True, help='use norm and denorm')
     parser.add_argument('--partial_start_index', type=int, default=0, help='the start index of variates for partial training, '
-                                                                           'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
+                                                                            'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
+
+    # Multi-scale patch inversion
+    parser.add_argument('--patch_sizes', type=str, default='16,32,64',
+                        help='comma-separated temporal patch sizes for iMultiScalePatchTransformer')
+    parser.add_argument('--patch_stride_ratio', type=float, default=0.5,
+                        help='patch stride as a fraction of each patch size')
 
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
@@ -95,6 +101,9 @@ if __name__ == '__main__':
         device_ids = args.devices.split(',')
         args.device_ids = [int(id_) for id_ in device_ids]
         args.gpu = args.device_ids[0]
+
+    # Keep checkpoints/results from different patch ablations separate.
+    patch_tag = args.patch_sizes.replace(',', '-') if args.model == 'iMultiScalePatchTransformer' else 'none'
 
     print('Args in experiment:')
     print(args)
@@ -108,7 +117,7 @@ if __name__ == '__main__':
     if args.is_training:
         for ii in range(args.itr):
             # setting record of experiments
-            setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
+            setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_pt{}_{}_{}'.format(
                 args.model_id,
                 args.model,
                 args.data,
@@ -124,6 +133,7 @@ if __name__ == '__main__':
                 args.factor,
                 args.embed,
                 args.distil,
+                patch_tag,
                 args.des,
                 args.class_strategy, ii)
 
@@ -141,7 +151,7 @@ if __name__ == '__main__':
             torch.cuda.empty_cache()
     else:
         ii = 0
-        setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
+        setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_pt{}_{}_{}'.format(
             args.model_id,
             args.model,
             args.data,
@@ -157,6 +167,7 @@ if __name__ == '__main__':
             args.factor,
             args.embed,
             args.distil,
+            patch_tag,
             args.des,
             args.class_strategy, ii)
 
