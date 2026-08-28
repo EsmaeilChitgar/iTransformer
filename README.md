@@ -76,6 +76,13 @@ bash ./scripts/boost_performance/Weather/iTransformer.sh
 # Train the model with partial variates, and generalize to the unseen variates
 bash ./scripts/variate_generalization/ECL/iTransformer.sh
 
+# TimeMixer-style temporal decomposition plus latent variate attention
+python -u run.py --is_training 1 --model_id timemixer_latent_ecl \
+  --model iTimeMixerLatentTransformer --data ECL \
+  --root_path ./data/electricity/ --data_path electricity.csv \
+  --features M --seq_len 96 --pred_len 96 \
+  --temporal_scales 3,7,15 --num_latents 32
+
 # Test the performance on the enlarged lookback window
 bash ./scripts/increasing_lookback/Traffic/iTransformer.sh
 
