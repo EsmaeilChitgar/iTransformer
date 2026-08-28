@@ -16,8 +16,8 @@ if __name__ == '__main__':
     # basic config
     parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
     parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
-    parser.add_argument('--model', type=str, required=True, default='iTransformer',
-                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer]')
+    parser.add_argument('--model', type=str, required=True, default='iLatentTransformer',
+                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer, iLatentTransformer]')
 
     # data loader
     parser.add_argument('--data', type=str, required=True, default='custom', help='dataset type')
@@ -87,8 +87,17 @@ if __name__ == '__main__':
     parser.add_argument('--partial_start_index', type=int, default=0, help='the start index of variates for partial training, '
                                                                            'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
 
+    # Latent cross-variate attention
+    parser.add_argument('--num_latents', type=int, default=32,
+                        help='number of learned latent tokens for iLatentTransformer')
+    parser.add_argument('--latent_full_attention_threshold', type=int, default=64,
+                        help='use exact attention for at most this many tokens; 0 disables fallback')
+
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
+
+    # Keep checkpoints/results for different latent budgets separate.
+    latent_tag = str(args.num_latents) if args.model == 'iLatentTransformer' else 'none'
 
     if args.use_gpu and args.use_multi_gpu:
         args.devices = args.devices.replace(' ', '')
@@ -108,7 +117,7 @@ if __name__ == '__main__':
     if args.is_training:
         for ii in range(args.itr):
             # setting record of experiments
-            setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
+            setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_lt{}_{}_{}'.format(
                 args.model_id,
                 args.model,
                 args.data,
@@ -124,6 +133,7 @@ if __name__ == '__main__':
                 args.factor,
                 args.embed,
                 args.distil,
+                latent_tag,
                 args.des,
                 args.class_strategy, ii)
 
@@ -141,7 +151,7 @@ if __name__ == '__main__':
             torch.cuda.empty_cache()
     else:
         ii = 0
-        setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
+        setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_lt{}_{}_{}'.format(
             args.model_id,
             args.model,
             args.data,
@@ -157,6 +167,7 @@ if __name__ == '__main__':
             args.factor,
             args.embed,
             args.distil,
+            latent_tag,
             args.des,
             args.class_strategy, ii)
 
