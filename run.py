@@ -17,7 +17,7 @@ if __name__ == '__main__':
     parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
     parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
     parser.add_argument('--model', type=str, required=True, default='iTransformer',
-                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer]')
+                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer, iSimpleWaveletTransformer]')
 
     # data loader
     parser.add_argument('--data', type=str, required=True, default='custom', help='dataset type')
@@ -85,7 +85,9 @@ if __name__ == '__main__':
     parser.add_argument('--efficient_training', type=bool, default=False, help='whether to use efficient_training (exp_name should be partial train)') # See Figure 8 of our paper for the detail
     parser.add_argument('--use_norm', type=int, default=True, help='use norm and denorm')
     parser.add_argument('--partial_start_index', type=int, default=0, help='the start index of variates for partial training, '
-                                                                           'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
+                                                                            'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
+    parser.add_argument('--wavelet_geometric_weight', type=float, default=0.25,
+                        help='weight of the SimpleTM-inspired wedge similarity term')
 
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False

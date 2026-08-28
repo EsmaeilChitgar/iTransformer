@@ -122,7 +122,29 @@ Benefiting from inverted Transformer modules:
 <img src="./figures/analysis.png" alt="" align=center />
 </p>
 
+## Architecture experiment report
+
+The implemented latent, TimeMixer-latent, sparse, multi-scale patch, and
+SimpleTM-inspired wavelet/geometric variants are documented with their goals,
+complexity analysis, measured prototype timings, and clearly labeled accuracy
+hypotheses in [docs/ARCHITECTURE_REPORT.md](docs/ARCHITECTURE_REPORT.md).
+
+The third-ranked variant in the current priority list is
+`iSimpleWaveletTransformer`; its run instructions and ablation plan are in
+[`scripts/simple_wavelet/README.md`](scripts/simple_wavelet/README.md).
+
 ## Citation
+
+## Architecture experiment report
+
+The implemented latent, TimeMixer-latent, sparse, multi-scale patch, and
+SimpleTM-inspired wavelet/geometric variants are documented with their goals,
+complexity analysis, measured prototype timings, and clearly labeled accuracy
+hypotheses in [docs/ARCHITECTURE_REPORT.md](docs/ARCHITECTURE_REPORT.md).
+
+The third-ranked variant in the current priority list is
+`iSimpleWaveletTransformer`; its run instructions and ablation plan are in
+[`scripts/simple_wavelet/README.md`](scripts/simple_wavelet/README.md).
 
 If you find this repo helpful, please cite our paper. 
 
