@@ -82,6 +82,10 @@ python -u run.py --is_training 1 --model_id latent_ecl \
   --root_path ./data/electricity/ --data_path electricity.csv \
   --features M --seq_len 96 --pred_len 96 --num_latents 32
 
+# Use `--trace_runtime` for sampled training timing diagnostics. The default
+# `--latent_attention_backend auto` uses fused scaled-dot-product attention;
+# use `--latent_attention_backend einsum` for an ablation against the old path.
+
 # Test the performance on the enlarged lookback window
 bash ./scripts/increasing_lookback/Traffic/iTransformer.sh
 

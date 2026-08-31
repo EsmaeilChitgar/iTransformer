@@ -70,6 +70,33 @@ class LatentTransformerTest(unittest.TestCase):
         self.assertIsNotNone(layer.latent_tokens.grad)
         self.assertTrue(torch.isfinite(x.grad).all())
 
+    def test_einsum_backend_remains_available_for_ablation(self):
+        layer = LatentVariableAttentionLayer(
+            d_model=16, n_heads=4, num_latents=4,
+            full_attention_threshold=8, output_attention=False,
+            dropout=0.0, attention_backend="einsum"
+        )
+        output, attention = layer(
+            torch.randn(2, 20, 16), torch.randn(2, 20, 16),
+            torch.randn(2, 20, 16), None
+        )
+        self.assertEqual(output.shape, (2, 20, 16))
+        self.assertIsNone(attention)
+
+    def test_auto_backend_uses_memory_efficient_path_without_attention_output(self):
+        layer = LatentVariableAttentionLayer(
+            d_model=16, n_heads=4, num_latents=4,
+            full_attention_threshold=8, output_attention=False,
+            dropout=0.0, attention_backend="auto"
+        )
+        output, attention = layer(
+            torch.randn(2, 20, 16), torch.randn(2, 20, 16),
+            torch.randn(2, 20, 16), None
+        )
+        self.assertEqual(output.shape, (2, 20, 16))
+        self.assertIsNone(attention)
+        self.assertEqual(layer.last_attention_mode, "latent")
+
     def test_model_supports_covariates_and_both_routes(self):
         model = Model(make_config(output_attention=True))
         small = model(torch.randn(2, 24, 5), torch.randn(2, 24, 2), None, None)

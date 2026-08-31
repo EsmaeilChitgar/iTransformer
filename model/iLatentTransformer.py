@@ -45,6 +45,7 @@ class Model(nn.Module):
                         output_attention=configs.output_attention,
                         full_attention_threshold=self.full_attention_threshold,
                         factor=configs.factor,
+                        attention_backend=getattr(configs, "latent_attention_backend", "auto"),
                     ),
                     configs.d_model,
                     configs.d_ff,

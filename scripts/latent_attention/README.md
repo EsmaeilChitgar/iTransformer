@@ -10,7 +10,7 @@ latent tokens --(variate-to-latent attention)--> variate updates
 ```
 
 With `N` variates and `M` latent tokens, the dense attention score count
-changes from `N^2` to `2*N*M`. For example, `N=321, M=32` gives 90.0% fewer
+changes from `N^2` to `2*N*M`. For example, `N=321, M=32` gives about 80.1% fewer
 attention scores; `N=862, M=32` gives 92.6% fewer scores. This is an
 attention-memory/FLOP claim, not a guaranteed end-to-end speed claim.
 
@@ -28,6 +28,12 @@ python -u run.py --is_training 1 --model_id latent_ecl \
   --root_path ./data/electricity/ --data_path electricity.csv \
   --features M --seq_len 96 --pred_len 96 --num_latents 32
 ```
+
+The optimized backend is selected automatically by default. To inspect
+sampled training timings, add `--trace_runtime`; use
+`--latent_attention_backend einsum` for an ablation against the previous
+implementation. Tracing is disabled by default and can be sampled with
+`--trace_interval` and `--trace_warmup_batches`.
 
 The minimum publishable evaluation should compare full iTransformer,
 iLatentTransformer with `M` in `{16, 32, 64}`, and the existing sparse branch

@@ -36,6 +36,63 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         criterion = nn.MSELoss()
         return criterion
 
+    def _runtime_trace_enabled(self):
+        return bool(getattr(self.args, 'trace_runtime', False))
+
+    def _runtime_trace_sample(self, step):
+        if not self._runtime_trace_enabled():
+            return False
+        interval = max(1, int(getattr(self.args, 'trace_interval', 200)))
+        warmup = max(0, int(getattr(self.args, 'trace_warmup_batches', 200)))
+        return step > warmup and step % interval == 0
+
+    def _model_trace_summary(self):
+        model = self.model.module if hasattr(self.model, 'module') else self.model
+        if not hasattr(model, 'encoder') or not getattr(model.encoder, 'attn_layers', None):
+            return None
+        layers = []
+        for encoder_layer in model.encoder.attn_layers:
+            attention = getattr(encoder_layer, 'attention', None)
+            if attention is None or not hasattr(attention, 'last_num_tokens'):
+                continue
+            layers.append({
+                'mode': getattr(attention, 'last_attention_mode', None),
+                'tokens': getattr(attention, 'last_num_tokens', None),
+                'scores': getattr(attention, 'last_score_count', None),
+            })
+        return layers or None
+
+    def _trace_times(self, start, forward_end, backward_end, optimizer_end):
+        if self.device.type == 'cuda':
+            torch.cuda.synchronize(self.device)
+            return (
+                start.elapsed_time(forward_end),
+                forward_end.elapsed_time(backward_end),
+                backward_end.elapsed_time(optimizer_end),
+            )
+        return (
+            (forward_end - start) * 1000.0,
+            (backward_end - forward_end) * 1000.0,
+            (optimizer_end - backward_end) * 1000.0,
+        )
+
+    def _print_runtime_trace(self, step, data_wait_ms, phase_times):
+        forward_ms, backward_ms, optimizer_ms = phase_times
+        summary = self._model_trace_summary()
+        suffix = ''
+        if summary:
+            suffix = ' layers=' + str(summary)
+        memory = ''
+        if self.device.type == 'cuda':
+            memory = ' peak_mem={:.1f}MB'.format(
+                torch.cuda.max_memory_allocated(self.device) / (1024 ** 2))
+        print(
+            '[trace][train] step={} data_wait={:.1f}ms forward={:.1f}ms '
+            'backward={:.1f}ms optimizer={:.1f}ms{}{}'.format(
+                step, data_wait_ms, forward_ms, backward_ms, optimizer_ms, memory, suffix),
+            flush=True,
+        )
+
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
         self.model.eval()
@@ -105,7 +162,16 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
+            trace_enabled = self._runtime_trace_enabled()
+            trace_last_end = time.perf_counter() if trace_enabled else None
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+                step = i + 1
+                if trace_enabled:
+                    trace_sample = self._runtime_trace_sample(step)
+                    data_wait_ms = (time.perf_counter() - trace_last_end) * 1000.0
+                else:
+                    trace_sample = False
+                    data_wait_ms = 0.0
                 iter_count += 1
                 model_optim.zero_grad()
                 batch_x = batch_x.float().to(self.device)
@@ -120,6 +186,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
+
+                # CUDA is asynchronous. Sampled CUDA events provide accurate
+                # phase timings while leaving normal runs completely untouched.
+                if trace_sample and self.device.type == 'cuda':
+                    trace_start = torch.cuda.Event(enable_timing=True)
+                    trace_forward_end = torch.cuda.Event(enable_timing=True)
+                    trace_backward_end = torch.cuda.Event(enable_timing=True)
+                    trace_optimizer_end = torch.cuda.Event(enable_timing=True)
+                    trace_start.record()
+                elif trace_sample:
+                    trace_start = time.perf_counter()
 
                 # encoder - decoder
                 if self.args.use_amp:
@@ -146,6 +223,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     loss = criterion(outputs, batch_y)
                     train_loss.append(loss.item())
 
+                if trace_sample and self.device.type == 'cuda':
+                    trace_forward_end.record()
+                elif trace_sample:
+                    trace_forward_end = time.perf_counter()
+
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
                     speed = (time.time() - time_now) / iter_count
@@ -156,11 +238,37 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+                if trace_sample and self.device.type == 'cuda':
+                    trace_backward_end.record()
+                elif trace_sample:
+                    trace_backward_end = time.perf_counter()
+
+                if self.args.use_amp:
                     scaler.step(model_optim)
                     scaler.update()
                 else:
-                    loss.backward()
                     model_optim.step()
+
+                if trace_sample and self.device.type == 'cuda':
+                    trace_optimizer_end.record()
+                    phase_times = self._trace_times(
+                        trace_start, trace_forward_end, trace_backward_end, trace_optimizer_end)
+                    self._print_runtime_trace(step, data_wait_ms, phase_times)
+                    trace_last_end = time.perf_counter()
+                elif trace_sample:
+                    trace_optimizer_end = time.perf_counter()
+                    self._print_runtime_trace(
+                        step,
+                        data_wait_ms,
+                        ((trace_forward_end - trace_start) * 1000.0,
+                         (trace_backward_end - trace_forward_end) * 1000.0,
+                         (trace_optimizer_end - trace_backward_end) * 1000.0),
+                    )
+                    trace_last_end = trace_optimizer_end
+                elif trace_enabled:
+                    trace_last_end = time.perf_counter()
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)

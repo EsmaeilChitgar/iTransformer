@@ -92,12 +92,22 @@ if __name__ == '__main__':
                         help='number of learned latent tokens for iLatentTransformer')
     parser.add_argument('--latent_full_attention_threshold', type=int, default=64,
                         help='use exact attention for at most this many tokens; 0 disables fallback')
+    parser.add_argument('--latent_attention_backend', type=str, default='auto',
+                        choices=['auto', 'sdpa', 'einsum'],
+                        help='latent attention kernel: auto uses fused SDPA when possible')
+    parser.add_argument('--trace_runtime', action='store_true',
+                        help='print sampled train timing diagnostics; disabled by default')
+    parser.add_argument('--trace_interval', type=int, default=200,
+                        help='print timing diagnostics every N training batches')
+    parser.add_argument('--trace_warmup_batches', type=int, default=200,
+                        help='skip timing diagnostics for the first N training batches')
 
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
 
     # Keep checkpoints/results for different latent budgets separate.
-    latent_tag = str(args.num_latents) if args.model == 'iLatentTransformer' else 'none'
+    latent_tag = ('{}_{}'.format(args.num_latents, args.latent_attention_backend)
+                  if args.model == 'iLatentTransformer' else 'none')
 
     if args.use_gpu and args.use_multi_gpu:
         args.devices = args.devices.replace(' ', '')
