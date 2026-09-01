@@ -56,6 +56,7 @@ class Model(nn.Module):
         )
 
         self.ungrouping = VariateUngrouping()
+        self.global_gate = nn.Parameter(torch.tensor(0.0))
 
         self.local_adapter = nn.Sequential(
             nn.Linear(configs.d_model, configs.group_adapter_dim),
@@ -100,8 +101,16 @@ class Model(nn.Module):
             assignment
         )
 
-        # enc_out = enc_out + self.local_adapter(group_context)
-        enc_out = enc_out + self.local_adapter(enc_out + group_context)
+        local_out = self.local_adapter(enc_out)
+        enc_out = enc_out + local_out + self.global_gate * group_context
+
+        # group_context = self.ungrouping(
+        #     group_tokens,
+        #     assignment
+        # )
+        #
+        # # enc_out = enc_out + self.local_adapter(group_context)
+        # enc_out = enc_out + self.local_adapter(enc_out + group_context)
 
         dec_out = self.projector(enc_out).permute(
             0, 2, 1
