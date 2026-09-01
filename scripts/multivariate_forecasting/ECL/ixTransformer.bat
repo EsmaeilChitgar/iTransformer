@@ -1,6 +1,6 @@
 @echo off
 set CUDA_VISIBLE_DEVICES=0
-set model_name=iGroupTransformer
+set model_name=EiFormer
 
 python -u run.py ^
   --is_training 1 ^
