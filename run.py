@@ -16,8 +16,8 @@ if __name__ == '__main__':
     # basic config
     parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
     parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
-    parser.add_argument('--model', type=str, required=True, default='iTransformer',
-                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer]')
+    parser.add_argument('--model', type=str, required=True, default='iGroupTransformer',
+                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer, iGroupTransformer]')
 
     # data loader
     parser.add_argument('--data', type=str, required=True, default='custom', help='dataset type')
@@ -86,6 +86,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_norm', type=int, default=True, help='use norm and denorm')
     parser.add_argument('--partial_start_index', type=int, default=0, help='the start index of variates for partial training, '
                                                                            'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
+    parser.add_argument('--n_groups', type=int, default=32, help='number of compact variate groups used by iGroupTransformer')
+    parser.add_argument('--group_adapter_dim', type=int, default=64, help='hidden dimension of the lightweight variate adapter')
 
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
