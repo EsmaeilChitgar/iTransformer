@@ -100,7 +100,8 @@ class Model(nn.Module):
             assignment
         )
 
-        enc_out = enc_out + self.local_adapter(group_context)
+        # enc_out = enc_out + self.local_adapter(group_context)
+        enc_out = enc_out + self.local_adapter(enc_out + group_context)
 
         dec_out = self.projector(enc_out).permute(
             0, 2, 1
