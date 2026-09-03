@@ -18,7 +18,7 @@ TARGET = "OT"
 # date + 861 variables + OT
 #
 # We keep OT as target and select this many input variables.
-N_SELECTED = 720
+N_SELECTED = 600
 
 RANDOM_STATE = 2023
 
