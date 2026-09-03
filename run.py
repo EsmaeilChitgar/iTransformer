@@ -16,8 +16,8 @@ if __name__ == '__main__':
     # basic config
     parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
     parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
-    parser.add_argument('--model', type=str, required=True, default='iTransformer',
-                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer]')
+    parser.add_argument('--model', type=str, required=True, default='iTransformer_Latent',
+                        help='model name, options: [iTransformer, iInformer, iReformer, iFlowformer, iFlashformer, iTransformer_Latent]')
 
     # data loader
     parser.add_argument('--data', type=str, required=True, default='custom', help='dataset type')
@@ -86,6 +86,10 @@ if __name__ == '__main__':
     parser.add_argument('--use_norm', type=int, default=True, help='use norm and denorm')
     parser.add_argument('--partial_start_index', type=int, default=0, help='the start index of variates for partial training, '
                                                                            'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
+
+    parser.add_argument('--num_latents',type=int,default=128,help='number of latent variate tokens')
+    parser.add_argument('--latent_d_ff',type=int,default=512,help='feed-forward dimension inside latent bottleneck')
+    parser.add_argument('--num_latent_blocks',type=int,default=1,help='number of latent self-attention blocks')
 
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
