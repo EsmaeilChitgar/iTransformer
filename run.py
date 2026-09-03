@@ -89,7 +89,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--num_latents',type=int,default=128,help='number of latent variate tokens')
     parser.add_argument('--latent_d_ff',type=int,default=512,help='feed-forward dimension inside latent bottleneck')
-    parser.add_argument('--num_latent_blocks',type=int,default=1,help='number of latent self-attention blocks')
+    parser.add_argument('--num_latent_blocks',type=int,default=0,help='number of latent self-attention blocks')
 
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
