@@ -1,0 +1,29 @@
+@echo off
+set CUDA_VISIBLE_DEVICES=0
+set model_name=EiFormer
+
+python -u run.py ^
+  --is_training 1 ^
+  --root_path ./dataset/electricity/ ^
+  --data_path electricity.csv ^
+  --model_id ECL_96_96 ^
+  --model %model_name% ^
+  --data custom ^
+  --features M ^
+  --seq_len 96 ^
+  --pred_len 96 ^
+  --e_layers 4 ^
+  --enc_in 321 ^
+  --dec_in 321 ^
+  --c_out 321 ^
+  --des Exp ^
+  --d_model 512 ^
+  --d_ff 512 ^
+  --batch_size 16 ^
+  --learning_rate 0.0001 ^
+  --itr 1
+  --n_heads 8
+  --dropout 0.1
+  --use_norm True
+
+pause
