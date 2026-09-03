@@ -718,9 +718,9 @@ class Model(nn.Module):
             for _ in range(configs.e_layers)
         ])
 
-        self.encoder_norm = nn.LayerNorm(
-            configs.d_model
-        )
+        # self.encoder_norm = nn.LayerNorm(
+        #     configs.d_model
+        # )
 
         self.projector = nn.Linear(
             configs.d_model,
@@ -772,9 +772,9 @@ class Model(nn.Module):
         for layer in self.encoder_layers:
             enc_out = layer(enc_out)
 
-        enc_out = self.encoder_norm(
-            enc_out
-        )
+        # enc_out = self.encoder_norm(
+        #     enc_out
+        # )
 
         # [B,N,d_model] -> [B,N,pred_len]
         enc_out = self.projector(
