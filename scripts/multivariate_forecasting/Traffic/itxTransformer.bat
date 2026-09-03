@@ -20,10 +20,7 @@ python -u run.py ^
   --d_model 512 ^
   --d_ff 512 ^
   --batch_size 16 ^
-  --learning_rate 0.0001 ^
+  --learning_rate 0.001 ^
   --itr 1
-  --n_heads 8
-  --dropout 0.1
-  --use_norm True
 
 pause
