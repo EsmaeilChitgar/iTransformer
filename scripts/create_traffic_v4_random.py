@@ -8,16 +8,16 @@ import pandas as pd
 INPUT_FILE = "./dataset/traffic/traffic.csv"
 OUTPUT_DIR = "./dataset/traffic"
 
-N_FIRST_VARS = 600
+N_LAST_VARS = 400
 
 
 # ============================================================
 # Main
 # ============================================================
 
-def create_first_k_subset(n_vars: int = N_FIRST_VARS):
+def create_last_k_subset(n_vars: int = N_LAST_VARS):
     print("=" * 60)
-    print(f"Creating First-{n_vars} subset")
+    print(f"Creating Last-{n_vars} subset")
     print("=" * 60)
 
     df = pd.read_csv(INPUT_FILE)
@@ -51,12 +51,12 @@ def create_first_k_subset(n_vars: int = N_FIRST_VARS):
         )
 
     # --------------------------------------------------------
-    # Sequential Selection (First N variables)
+    # Sequential Selection (Last N variables)
     # --------------------------------------------------------
-    selected_cols = candidate_cols[:n_vars]
+    selected_cols = candidate_cols[-n_vars:]
 
     # --------------------------------------------------------
-    # Construct final column order: date -> first N vars -> OT
+    # Construct final column order: date -> last N vars -> OT
     # --------------------------------------------------------
     output_cols = [date_col] + selected_cols + [target_col]
 
@@ -69,12 +69,12 @@ def create_first_k_subset(n_vars: int = N_FIRST_VARS):
 
     output_file = os.path.join(
         OUTPUT_DIR,
-        f"traffic_v4_first_{n_vars}.csv"
+        f"traffic_v4_last_{n_vars}.csv"
     )
 
     metadata_file = os.path.join(
         OUTPUT_DIR,
-        f"traffic_v4_first_{n_vars}_selection.txt"
+        f"traffic_v4_last_{n_vars}_selection.txt"
     )
 
     # --------------------------------------------------------
@@ -86,8 +86,8 @@ def create_first_k_subset(n_vars: int = N_FIRST_VARS):
     # Save metadata
     # --------------------------------------------------------
     with open(metadata_file, "w", encoding="utf-8") as f:
-        f.write("Sequential Traffic Variable Selection (First N)\n")
-        f.write("==============================================\n\n")
+        f.write("Sequential Traffic Variable Selection (Last N)\n")
+        f.write("=============================================\n\n")
         f.write(f"Requested variables: {n_vars}\n")
         f.write(f"Original shape: {df.shape}\n")
         f.write(f"New shape: {df_out.shape}\n\n")
@@ -106,11 +106,26 @@ def create_first_k_subset(n_vars: int = N_FIRST_VARS):
 
 
 if __name__ == "__main__":
-    create_first_k_subset(N_FIRST_VARS)
+    create_last_k_subset(N_LAST_VARS)
 
     print("=" * 60)
     print("Dataset created successfully.")
     print("=" * 60)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # import os
 # import numpy as np
