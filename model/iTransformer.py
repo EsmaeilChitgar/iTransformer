@@ -16,21 +16,24 @@ class Model(nn.Module):
     """
     Paper link: https://arxiv.org/abs/2310.06625
 
-    Original iTransformer architecture with optional profiling.
+    Original iTransformer architecture with optional
+    forward-only profiling.
 
-    Profiling only adds measurement/labels.
-    It does not intentionally change the model computation.
+    Profiling does not intentionally change the model
+    computation. It only measures selected forward passes.
     """
 
     def __init__(self, configs):
+
         super(Model, self).__init__()
+
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
         self.output_attention = configs.output_attention
         self.use_norm = configs.use_norm
 
         # ============================================================
-        # PROFILING CONFIGURATION
+        # Profiling configuration
         # ============================================================
 
         self.enable_profiling = getattr(
@@ -42,13 +45,13 @@ class Model(nn.Module):
         self.profile_skip_steps = getattr(
             configs,
             'profile_skip_steps',
-            2
+            3
         )
 
         self.profile_warmup_steps = getattr(
             configs,
             'profile_warmup_steps',
-            1
+            2
         )
 
         self.profile_active_steps = getattr(
@@ -111,13 +114,12 @@ class Model(nn.Module):
             True
         )
 
-        # ============================================================
-        # Profiler internal state
-        # ============================================================
+        # ------------------------------------------------------------
+        # Forward call counters
+        # ------------------------------------------------------------
 
-        self._profiler = None
-        self._profiler_step_count = 0
-        self._profiler_finished = False
+        self._forward_call_count = 0
+        self._profile_active_count = 0
 
         # ============================================================
         # Embedding
@@ -141,22 +143,29 @@ class Model(nn.Module):
             [
                 EncoderLayer(
                     AttentionLayer(
-                        FullAttention(False, configs.factor, attention_dropout=configs.dropout,
-                            output_attention=configs.output_attention), configs.d_model, configs.n_heads),
+                        FullAttention(
+                            False,
+                            configs.factor,
+                            attention_dropout=configs.dropout,
+                            output_attention=configs.output_attention
+                        ),
+                        configs.d_model,
+                        configs.n_heads
+                    ),
                     configs.d_model,
                     configs.d_ff,
                     dropout=configs.dropout,
                     activation=configs.activation
-                ) for l in range(configs.e_layers)
+                )
+                for l in range(configs.e_layers)
             ],
-            norm_layer=torch.nn.LayerNorm(configs.d_model)
+            norm_layer=torch.nn.LayerNorm(
+                configs.d_model
+            )
         )
 
         # ============================================================
         # Profiling metadata
-        #
-        # IMPORTANT:
-        # self.encoder MUST be created before accessing it.
         # ============================================================
 
         self.encoder.enable_profiling = (
@@ -175,7 +184,6 @@ class Model(nn.Module):
                 layer_id
             )
 
-            # AttentionLayer
             if hasattr(
                 encoder_layer,
                 'attention'
@@ -189,7 +197,6 @@ class Model(nn.Module):
                     layer_id
                 )
 
-                # FullAttention
                 if hasattr(
                     encoder_layer.attention,
                     'inner_attention'
@@ -213,98 +220,72 @@ class Model(nn.Module):
             bias=True
         )
 
+        # ============================================================
+        # Profiling directory
+        # ============================================================
+
+        if self.enable_profiling:
+
+            os.makedirs(
+                self.profile_trace_dir,
+                exist_ok=True
+            )
+
+            print(
+                '[Profiler] Forward-only profiling enabled.'
+            )
+
     # ================================================================
-    # Profiling helper
+    # Profiling range
     # ================================================================
 
     def _profile_range(self, name):
 
-        if self.enable_profiling:
+        if self._currently_profiling:
+
             return record_function(name)
 
         return nullcontext()
 
     # ================================================================
-    # Start profiler
+    # Should this forward be profiled?
     # ================================================================
 
-    def _start_profiler(self):
+    def _should_profile_this_forward(self):
 
         if not self.enable_profiling:
-            return
+            return False
 
-        if self._profiler is not None:
-            return
+        # The forward counter starts from 1.
+        current_step = self._forward_call_count
 
-        if self._profiler_finished:
-            return
-
-        os.makedirs(
-            self.profile_trace_dir,
-            exist_ok=True
+        profile_start = (
+            self.profile_skip_steps
+            + self.profile_warmup_steps
+            + 1
         )
 
-        # ------------------------------------------------------------
-        # Activities
-        # ------------------------------------------------------------
-
-        activities = [
-            ProfilerActivity.CPU
-        ]
-
-        if torch.cuda.is_available():
-            activities.append(
-                ProfilerActivity.CUDA
-            )
-
-        # ------------------------------------------------------------
-        # Schedule
-        #
-        # wait    -> ignore
-        # warmup  -> profiler warms up but does not save results
-        # active  -> actual recorded steps
-        # ------------------------------------------------------------
-
-        schedule = torch.profiler.schedule(
-            wait=self.profile_skip_steps,
-            warmup=self.profile_warmup_steps,
-            active=self.profile_active_steps,
-            repeat=1
+        profile_end = (
+            self.profile_skip_steps
+            + self.profile_warmup_steps
+            + self.profile_active_steps
         )
 
-        # ------------------------------------------------------------
-        # Trace handler
-        # ------------------------------------------------------------
-
-        if self.profile_save_trace:
-
-            trace_handler = (
-                torch.profiler.tensorboard_trace_handler(
-                    self.profile_trace_dir
-                )
-            )
-
-        else:
-
-            trace_handler = None
-
-        # ------------------------------------------------------------
-        # Profiler
-        # ------------------------------------------------------------
-
-        self._profiler = profile(
-            activities=activities,
-            schedule=schedule,
-            on_trace_ready=trace_handler,
-            record_shapes=self.profile_record_shapes,
-            profile_memory=self.profile_memory,
-            with_stack=self.profile_with_stack,
-            with_flops=self.profile_with_flops
+        return (
+            profile_start
+            <= current_step
+            <= profile_end
         )
 
-        self._profiler.__enter__()
+    # ================================================================
+    # Print model information
+    # ================================================================
 
-        self._profiler_step_count = 0
+    def _print_profile_input_info(
+        self,
+        x_enc,
+        x_mark_enc
+    ):
 
         print(
             '\n'
@@ -312,7 +293,7 @@ class Model(nn.Module):
         )
 
         print(
-            'iTRANSFORMER PROFILER STARTED'
+            'iTRANSFORMER FORWARD PROFILE'
         )
 
         print(
@@ -320,24 +301,74 @@ class Model(nn.Module):
         )
 
         print(
-            f'Skip steps   : '
-            f'{self.profile_skip_steps}'
+            f'Forward call       : '
+            f'{self._forward_call_count}'
         )
 
         print(
-            f'Warmup steps : '
-            f'{self.profile_warmup_steps}'
+            f'Active profile     : '
+            f'{self._profile_active_count}'
         )
 
         print(
-            f'Active steps : '
-            f'{self.profile_active_steps}'
+            f'x_enc shape        : '
+            f'{tuple(x_enc.shape)}'
         )
 
         print(
-            f'Trace dir    : '
-            f'{self.profile_trace_dir}'
+            f'x_enc dtype        : '
+            f'{x_enc.dtype}'
         )
+
+        print(
+            f'x_enc device       : '
+            f'{x_enc.device}'
+        )
+
+        if x_mark_enc is not None:
+
+            print(
+                f'x_mark_enc shape   : '
+                f'{tuple(x_mark_enc.shape)}'
+            )
+
+        print(
+            f'use_norm           : '
+            f'{self.use_norm}'
+        )
+
+        print(
+            f'encoder layers     : '
+            f'{len(self.encoder.attn_layers)}'
+        )
+
+        if len(self.encoder.attn_layers) > 0:
+
+            layer0 = (
+                self.encoder.attn_layers[0]
+            )
+
+            print(
+                f'd_model            : '
+                f'{layer0.norm1.normalized_shape[0]}'
+            )
+
+            if hasattr(layer0, 'conv1'):
+
+                print(
+                    f'd_ff               : '
+                    f'{layer0.conv1.out_channels}'
+                )
+
+            if hasattr(
+                layer0,
+                'attention'
+            ):
+
+                print(
+                    f'n_heads            : '
+                    f'{layer0.attention.n_heads}'
+                )
 
         print(
             '=' * 100
@@ -345,40 +376,37 @@ class Model(nn.Module):
         )
 
     # ================================================================
-    # Profiler step
+    # Create a new profiler for ONE forward pass
     # ================================================================
 
-    def _profiler_step(self):
+    def _create_forward_profiler(self):
 
-        if self._profiler is None:
-            return
+        activities = [
+            ProfilerActivity.CPU
+        ]
 
-        self._profiler.step()
+        if torch.cuda.is_available():
 
-        self._profiler_step_count += 1
+            activities.append(
+                ProfilerActivity.CUDA
+            )
 
-        # Number of calls needed before the scheduled profile is done.
-        total_steps = (
-            self.profile_skip_steps
-            + self.profile_warmup_steps
-            + self.profile_active_steps
+        return profile(
+            activities=activities,
+            record_shapes=self.profile_record_shapes,
+            profile_memory=self.profile_memory,
+            with_stack=self.profile_with_stack,
+            with_flops=self.profile_with_flops
         )
 
-        if (
-            self._profiler_step_count
-            >= total_steps
-        ):
-
-            self._stop_profiler()
-
     # ================================================================
-    # Stop profiler and print summary
+    # Save and print profiler results for one forward
     # ================================================================
 
-    def _stop_profiler(self):
-
-        if self._profiler is None:
-            return
+    def _finish_forward_profile(
+        self,
+        profiler_instance
+    ):
 
         print(
             '\n'
@@ -386,31 +414,33 @@ class Model(nn.Module):
         )
 
         print(
-            'iTRANSFORMER PROFILER SUMMARY'
+            'FORWARD-ONLY PROFILER SUMMARY'
         )
 
         print(
             '=' * 100
         )
 
+        # ------------------------------------------------------------
+        # Prefer CUDA timing when available.
+        # ------------------------------------------------------------
+
+        if torch.cuda.is_available():
+
+            sort_key = (
+                'self_cuda_time_total'
+            )
+
+        else:
+
+            sort_key = (
+                'self_cpu_time_total'
+            )
+
         try:
 
-            # CUDA time when CUDA is available.
-            # Otherwise CPU time.
-            if torch.cuda.is_available():
-
-                sort_key = (
-                    'self_cuda_time_total'
-                )
-
-            else:
-
-                sort_key = (
-                    'self_cpu_time_total'
-                )
-
             print(
-                self._profiler.key_averages(
+                profiler_instance.key_averages(
                     group_by_input_shape=(
                         self.profile_record_shapes
                     )
@@ -426,12 +456,14 @@ class Model(nn.Module):
                 '[Profiler] Detailed summary failed:'
             )
 
-            print(e)
+            print(
+                repr(e)
+            )
 
             try:
 
                 print(
-                    self._profiler.key_averages().table(
+                    profiler_instance.key_averages().table(
                         sort_by='self_cpu_time_total',
                         row_limit=self.profile_top_ops
                     )
@@ -443,150 +475,61 @@ class Model(nn.Module):
                     '[Profiler] Fallback summary failed:'
                 )
 
-                print(e2)
+                print(
+                    repr(e2)
+                )
 
-        print(
-            '=' * 100
-        )
+        # ------------------------------------------------------------
+        # Save trace
+        # ------------------------------------------------------------
 
-        print(
-            'Profiler trace directory: '
-            f'{self.profile_trace_dir}'
-        )
+        if self.profile_save_trace:
+
+            trace_path = os.path.join(
+                self.profile_trace_dir,
+                (
+                    'forward_profile_'
+                    f'{self._profile_active_count:02d}.json'
+                )
+            )
+
+            try:
+
+                profiler_instance.export_chrome_trace(
+                    trace_path
+                )
+
+                print(
+                    f'Forward trace saved: '
+                    f'{trace_path}'
+                )
+
+            except Exception as e:
+
+                print(
+                    '[Profiler] Could not save Chrome trace:'
+                )
+
+                print(
+                    repr(e)
+                )
 
         print(
             '=' * 100
             + '\n'
         )
 
-        # ------------------------------------------------------------
-        # Close profiler
-        # ------------------------------------------------------------
-
-        self._profiler.__exit__(
-            None,
-            None,
-            None
-        )
-
-        self._profiler = None
-        self._profiler_finished = True
-
     # ================================================================
-    # Forecast
+    # Normalization
     # ================================================================
 
-    def forecast(
+    def _forward_impl(
         self,
         x_enc,
         x_mark_enc,
         x_dec,
         x_mark_dec
     ):
-
-        # ============================================================
-        # Start profiler on first forward
-        # ============================================================
-
-        if (
-            self.enable_profiling
-            and not self._profiler_finished
-            and self._profiler is None
-        ):
-
-            self._start_profiler()
-
-        # ============================================================
-        # Input information
-        # ============================================================
-
-        if (
-            self.enable_profiling
-            and self.profile_print_model_info
-            and self._profiler_step_count == 0
-        ):
-
-            print(
-                '\n'
-                + '=' * 100
-            )
-
-            print(
-                'iTRANSFORMER INPUT'
-            )
-
-            print(
-                '=' * 100
-            )
-
-            print(
-                f'x_enc shape      : '
-                f'{tuple(x_enc.shape)}'
-            )
-
-            print(
-                f'x_enc dtype      : '
-                f'{x_enc.dtype}'
-            )
-
-            print(
-                f'x_enc device     : '
-                f'{x_enc.device}'
-            )
-
-            if x_mark_enc is not None:
-
-                print(
-                    f'x_mark_enc shape : '
-                    f'{tuple(x_mark_enc.shape)}'
-                )
-
-            print(
-                f'use_norm         : '
-                f'{self.use_norm}'
-            )
-
-            print(
-                f'encoder layers   : '
-                f'{len(self.encoder.attn_layers)}'
-            )
-
-            if len(self.encoder.attn_layers) > 0:
-
-                print(
-                    f'd_model          : '
-                    f'{self.encoder.attn_layers[0].norm1.normalized_shape[0]}'
-                )
-
-                if hasattr(
-                    self.encoder.attn_layers[0],
-                    'conv1'
-                ):
-
-                    print(
-                        f'FFN d_ff         : '
-                        f'{self.encoder.attn_layers[0].conv1.out_channels}'
-                    )
-
-                if hasattr(
-                    self.encoder.attn_layers[0],
-                    'attention'
-                ):
-
-                    if hasattr(
-                        self.encoder.attn_layers[0].attention,
-                        'n_heads'
-                    ):
-
-                        print(
-                            f'n_heads          : '
-                            f'{self.encoder.attn_layers[0].attention.n_heads}'
-                        )
-
-            print(
-                '=' * 100
-                + '\n'
-            )
 
         # ============================================================
         # Normalization
@@ -598,7 +541,6 @@ class Model(nn.Module):
 
             if self.use_norm:
 
-                # Normalization from Non-stationary Transformer
                 means = x_enc.mean(
                     1,
                     keepdim=True
@@ -621,8 +563,6 @@ class Model(nn.Module):
 
         # ============================================================
         # Embedding
-        #
-        # B L N -> B N E
         # ============================================================
 
         with self._profile_range(
@@ -635,20 +575,17 @@ class Model(nn.Module):
             )
 
         if (
-            self.enable_profiling
+            self._currently_profiling
             and self.profile_print_shapes
-            and self._profiler_step_count == 0
         ):
 
             print(
-                f'Embedding output : '
+                f'Embedding output  : '
                 f'{tuple(enc_out.shape)}'
             )
 
         # ============================================================
         # Encoder
-        #
-        # B N E -> B N E
         # ============================================================
 
         with self._profile_range(
@@ -661,20 +598,17 @@ class Model(nn.Module):
             )
 
         if (
-            self.enable_profiling
+            self._currently_profiling
             and self.profile_print_shapes
-            and self._profiler_step_count == 0
         ):
 
             print(
-                f'Encoder output   : '
+                f'Encoder output    : '
                 f'{tuple(enc_out.shape)}'
             )
 
         # ============================================================
         # Projection
-        #
-        # B N E -> B N S -> B S N
         # ============================================================
 
         with self._profile_range(
@@ -690,13 +624,12 @@ class Model(nn.Module):
             )[:, :, :N]
 
         if (
-            self.enable_profiling
+            self._currently_profiling
             and self.profile_print_shapes
-            and self._profiler_step_count == 0
         ):
 
             print(
-                f'Projection output: '
+                f'Projection output : '
                 f'{tuple(dec_out.shape)}'
             )
 
@@ -710,7 +643,6 @@ class Model(nn.Module):
 
             if self.use_norm:
 
-                # De-Normalization from Non-stationary Transformer
                 dec_out = dec_out * (
                     stdev[:, 0, :]
                     .unsqueeze(1)
@@ -731,16 +663,111 @@ class Model(nn.Module):
                     )
                 )
 
-        # ============================================================
-        # Advance profiler by one model forward
-        # ============================================================
+        return dec_out, attns
+
+    # ================================================================
+    # Forecast
+    # ================================================================
+
+    def forecast(
+        self,
+        x_enc,
+        x_mark_enc,
+        x_dec,
+        x_mark_dec
+    ):
+
+        # ------------------------------------------------------------
+        # Count every forward call
+        # ------------------------------------------------------------
+
+        self._forward_call_count += 1
+
+        # ------------------------------------------------------------
+        # Decide whether this forward should be profiled
+        # ------------------------------------------------------------
+
+        profile_this_forward = (
+            self._should_profile_this_forward()
+        )
+
+        # ------------------------------------------------------------
+        # If not profiling this forward:
+        # run the original computation directly.
+        # ------------------------------------------------------------
+
+        if not profile_this_forward:
+
+            self._currently_profiling = False
+
+            return self._forward_impl(
+                x_enc,
+                x_mark_enc,
+                x_dec,
+                x_mark_dec
+            )
+
+        # ------------------------------------------------------------
+        # Active profiling forward
+        # ------------------------------------------------------------
+
+        self._profile_active_count += 1
+
+        self._currently_profiling = True
 
         if (
-            self.enable_profiling
-            and not self._profiler_finished
+            self.profile_print_model_info
         ):
 
-            self._profiler_step()
+            self._print_profile_input_info(
+                x_enc,
+                x_mark_enc
+            )
+
+        profiler_instance = (
+            self._create_forward_profiler()
+        )
+
+        # ------------------------------------------------------------
+        # IMPORTANT:
+        # profiler starts immediately before forward computation
+        # and stops immediately after forward computation.
+        #
+        # Therefore:
+        #
+        #     forward
+        #       only
+        #
+        # is captured.
+        #
+        # backward() and optimizer.step() happen after this method
+        # returns, so they are NOT captured.
+        # ------------------------------------------------------------
+
+        profiler_instance.__enter__()
+
+        try:
+
+            dec_out, attns = self._forward_impl(
+                x_enc,
+                x_mark_enc,
+                x_dec,
+                x_mark_dec
+            )
+
+        finally:
+
+            self._currently_profiling = False
+
+            profiler_instance.__exit__(
+                None,
+                None,
+                None
+            )
+
+        self._finish_forward_profile(
+            profiler_instance
+        )
 
         return dec_out, attns
 
