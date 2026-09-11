@@ -5,6 +5,46 @@ from experiments.exp_long_term_forecasting_partial import Exp_Long_Term_Forecast
 import random
 import numpy as np
 
+# ============================================================
+# PROFILING CONFIGURATION
+# ============================================================
+
+# Main switch:
+# True  -> enable detailed iTransformer forward profiling
+# False -> completely disable profiling
+ENABLE_PROFILING = True
+
+# Number of forward passes to ignore before recording
+PROFILE_SKIP_STEPS = 2
+
+# Number of forward passes used only for profiler warmup
+PROFILE_WARMUP_STEPS = 1
+
+# Number of forward passes actually recorded
+PROFILE_ACTIVE_STEPS = 5
+
+# TensorBoard trace
+PROFILE_SAVE_TRACE = True
+PROFILE_TRACE_DIR = './profiling'
+
+# Profiler details
+PROFILE_RECORD_SHAPES = True
+PROFILE_PROFILE_MEMORY = True
+PROFILE_WITH_STACK = False
+
+# PyTorch FLOPs estimation.
+# Note: PyTorch reports FLOPs only for supported operators.
+PROFILE_WITH_FLOPS = True
+
+# Number of rows printed in profiler summary
+PROFILE_TOP_OPS = 50
+
+# Print useful model/tensor information once
+PROFILE_PRINT_MODEL_INFO = True
+PROFILE_PRINT_SHAPES = True
+
+# ============================================================
+
 if __name__ == '__main__':
     fix_seed = 2023
     random.seed(fix_seed)
@@ -21,7 +61,7 @@ if __name__ == '__main__':
 
     # data loader
     parser.add_argument('--data', type=str, required=True, default='custom', help='dataset type')
-    parser.add_argument('--root_path', type=str, default='./data/electricity/', help='root path of the data file')
+    parser.add_argument('--root_path', type=str, default='./dataset/electricity/', help='root path of the data file')
     parser.add_argument('--data_path', type=str, default='electricity.csv', help='data csv file')
     parser.add_argument('--features', type=str, default='M',
                         help='forecasting task, options:[M, S, MS]; M:multivariate predict multivariate, S:univariate predict univariate, MS:multivariate predict univariate')
@@ -88,6 +128,54 @@ if __name__ == '__main__':
                                                                            'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
 
     args = parser.parse_args()
+
+    # ============================================================
+    # Pass profiling configuration to the model
+    # ============================================================
+
+    args.enable_profiling = ENABLE_PROFILING
+
+    args.profile_skip_steps = PROFILE_SKIP_STEPS
+    args.profile_warmup_steps = PROFILE_WARMUP_STEPS
+    args.profile_active_steps = PROFILE_ACTIVE_STEPS
+
+    args.profile_save_trace = PROFILE_SAVE_TRACE
+    args.profile_trace_dir = PROFILE_TRACE_DIR
+
+    args.profile_record_shapes = PROFILE_RECORD_SHAPES
+    args.profile_memory = PROFILE_PROFILE_MEMORY
+    args.profile_with_stack = PROFILE_WITH_STACK
+    args.profile_with_flops = PROFILE_WITH_FLOPS
+
+    args.profile_top_ops = PROFILE_TOP_OPS
+
+    args.profile_print_model_info = PROFILE_PRINT_MODEL_INFO
+    args.profile_print_shapes = PROFILE_PRINT_SHAPES
+
+    # ============================================================
+
+    # ============================================================
+    # Print profiling configuration
+    # ============================================================
+
+    print('\n' + '=' * 100)
+    print('iTRANSFORMER PROFILING CONFIGURATION')
+    print('=' * 100)
+    print(f'ENABLE_PROFILING      : {args.enable_profiling}')
+
+    if args.enable_profiling:
+        print(f'PROFILE_SKIP_STEPS    : {args.profile_skip_steps}')
+        print(f'PROFILE_WARMUP_STEPS  : {args.profile_warmup_steps}')
+        print(f'PROFILE_ACTIVE_STEPS  : {args.profile_active_steps}')
+        print(f'PROFILE_RECORD_SHAPES : {args.profile_record_shapes}')
+        print(f'PROFILE_MEMORY        : {args.profile_memory}')
+        print(f'PROFILE_WITH_FLOPS    : {args.profile_with_flops}')
+        print(f'PROFILE_TRACE_DIR     : {args.profile_trace_dir}')
+
+    print('=' * 100 + '\n')
+
+    # ============================================================
+
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
 
     if args.use_gpu and args.use_multi_gpu:

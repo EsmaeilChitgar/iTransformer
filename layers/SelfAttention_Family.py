@@ -5,6 +5,8 @@ from math import sqrt
 from utils.masking import TriangularCausalMask, ProbMask
 from reformer_pytorch import LSHSelfAttention
 from einops import rearrange
+from contextlib import nullcontext
+from torch.profiler import record_function
 
 
 # Code implementation from https://github.com/thuml/Flowformer
@@ -132,33 +134,139 @@ class FlashAttention(nn.Module):
 
 
 class FullAttention(nn.Module):
-    def __init__(self, mask_flag=True, factor=5, scale=None, attention_dropout=0.1, output_attention=False):
+    def __init__(
+        self,
+        mask_flag=True,
+        factor=5,
+        scale=None,
+        attention_dropout=0.1,
+        output_attention=False
+    ):
         super(FullAttention, self).__init__()
+
         self.scale = scale
         self.mask_flag = mask_flag
         self.output_attention = output_attention
         self.dropout = nn.Dropout(attention_dropout)
 
-    def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
+        # ====================================================
+        # Profiling state
+        # ====================================================
+
+        self.enable_profiling = False
+        self.profile_layer_id = -1
+
+    def _profile_range(self, name):
+        if self.enable_profiling:
+            return record_function(name)
+
+        return nullcontext()
+
+    def forward(
+        self,
+        queries,
+        keys,
+        values,
+        attn_mask,
+        tau=None,
+        delta=None
+    ):
         B, L, H, E = queries.shape
         _, S, _, D = values.shape
+
         scale = self.scale or 1. / sqrt(E)
 
-        scores = torch.einsum("blhe,bshe->bhls", queries, keys)
+        # ====================================================
+        # Entire FullAttention
+        # ====================================================
 
-        if self.mask_flag:
-            if attn_mask is None:
-                attn_mask = TriangularCausalMask(B, L, device=queries.device)
+        with self._profile_range(
+            f'FullAttention[{self.profile_layer_id}]::Total'
+        ):
 
-            scores.masked_fill_(attn_mask.mask, -np.inf)
+            # ====================================================
+            # Q x K
+            # ====================================================
 
-        A = self.dropout(torch.softmax(scale * scores, dim=-1))
-        V = torch.einsum("bhls,bshd->blhd", A, values)
+            with self._profile_range(
+                f'FullAttention[{self.profile_layer_id}]::QK_Score'
+            ):
+
+                scores = torch.einsum(
+                    "blhe,bshe->bhls",
+                    queries,
+                    keys
+                )
+
+            # ====================================================
+            # Mask
+            # ====================================================
+
+            if self.mask_flag:
+
+                with self._profile_range(
+                    f'FullAttention[{self.profile_layer_id}]::Mask'
+                ):
+
+                    if attn_mask is None:
+
+                        attn_mask = TriangularCausalMask(
+                            B,
+                            L,
+                            device=queries.device
+                        )
+
+                    scores.masked_fill_(
+                        attn_mask.mask,
+                        -np.inf
+                    )
+
+            # ====================================================
+            # Scale + Softmax + Dropout
+            # ====================================================
+
+            with self._profile_range(
+                f'FullAttention[{self.profile_layer_id}]::Softmax_Dropout'
+            ):
+
+                A = self.dropout(
+                    torch.softmax(
+                        scale * scores,
+                        dim=-1
+                    )
+                )
+
+            # ====================================================
+            # Attention x V
+            # ====================================================
+
+            with self._profile_range(
+                f'FullAttention[{self.profile_layer_id}]::Attention_V'
+            ):
+
+                V = torch.einsum(
+                    "bhls,bshd->blhd",
+                    A,
+                    values
+                )
+
+        # ====================================================
+        # Output
+        # ====================================================
 
         if self.output_attention:
-            return (V.contiguous(), A)
+
+            return (
+                V.contiguous(),
+                A
+            )
+
         else:
-            return (V.contiguous(), None)
+
+            return (
+                V.contiguous(),
+                None
+            )
 
 
 # Code implementation from https://github.com/zhouhaoyi/Informer2020
@@ -277,27 +385,86 @@ class AttentionLayer(nn.Module):
         self.value_projection = nn.Linear(d_model, d_values * n_heads)
         self.out_projection = nn.Linear(d_values * n_heads, d_model)
         self.n_heads = n_heads
+        # Profiling state
+        self.enable_profiling = False
+        self.profile_layer_id = -1
+
+    def _profile_range(self, name):
+        if self.enable_profiling:
+            return record_function(name)
+
+        return nullcontext()
 
     def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
         B, L, _ = queries.shape
         _, S, _ = keys.shape
         H = self.n_heads
 
-        queries = self.query_projection(queries).view(B, L, H, -1)
-        keys = self.key_projection(keys).view(B, S, H, -1)
-        values = self.value_projection(values).view(B, S, H, -1)
+        # ====================================================
+        # Q projection
+        # ====================================================
 
-        out, attn = self.inner_attention(
-            queries,
-            keys,
-            values,
-            attn_mask,
-            tau=tau,
-            delta=delta
-        )
-        out = out.view(B, L, -1)
+        with self._profile_range(
+                f'AttentionLayer[{self.profile_layer_id}]::Q_Projection'
+        ):
+            queries = self.query_projection(
+                queries
+            ).view(
+                B, L, H, -1
+            )
 
-        return self.out_projection(out), attn
+        # ====================================================
+        # K projection
+        # ====================================================
+
+        with self._profile_range(
+                f'AttentionLayer[{self.profile_layer_id}]::K_Projection'
+        ):
+            keys = self.key_projection(
+                keys
+            ).view(
+                B, S, H, -1
+            )
+
+        # ====================================================
+        # V projection
+        # ====================================================
+
+        with self._profile_range(
+                f'AttentionLayer[{self.profile_layer_id}]::V_Projection'
+        ):
+            values = self.value_projection(
+                values
+            ).view(
+                B, S, H, -1
+            )
+
+        with self._profile_range(
+                f'AttentionLayer[{self.profile_layer_id}]::InnerAttention'
+        ):
+            out, attn = self.inner_attention(
+                queries,
+                keys,
+                values,
+                attn_mask,
+                tau=tau,
+                delta=delta
+            )
+        with self._profile_range(
+                f'AttentionLayer[{self.profile_layer_id}]::MergeHeads'
+        ):
+            out = out.view(
+                B,
+                L,
+                -1
+            )
+
+        with self._profile_range(
+                f'AttentionLayer[{self.profile_layer_id}]::OutputProjection'
+        ):
+            out = self.out_projection(out)
+
+        return out, attn
 
 
 class ReformerLayer(nn.Module):
