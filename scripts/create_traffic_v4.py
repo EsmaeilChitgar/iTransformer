@@ -14,11 +14,11 @@ OUTPUT_DIR = "./dataset/traffic/"
 
 TARGET = "OT"
 
-# نحوه انتخاب متغیرها:
 # "first"     -> انتخاب n تای اول
 # "last"      -> انتخاب n تای آخر
+# "random"    -> انتخاب n متغیر به صورت تصادفی
 # "diversity" -> اجرای الگوریتم هدفمند قبلی
-SELECTION_MODE = "diversity"  # گزینه‌ها: "first", "last", "diversity"
+SELECTION_MODE = "random"  # گزینه‌ها: "first", "last", "random", "diversity"
 
 # We keep OT as target and select this many input variables.
 N_SELECTED = 600
@@ -441,6 +441,21 @@ def main():
         print(f"--> Selecting LAST {n_to_select} variables sequentially.")
         selected_features = feature_names[-n_to_select:]
 
+    elif SELECTION_MODE == "random":
+        print(
+            f"--> Selecting RANDOM {n_to_select} variables "
+            f"(seed={RANDOM_STATE})."
+        )
+
+        rng = np.random.RandomState(RANDOM_STATE)
+
+        selected_indices = rng.choice(
+            len(feature_names),
+            size=n_to_select,
+            replace=False
+        )
+        selected_features = [feature_names[i] for i in selected_indices]
+
     elif SELECTION_MODE == "diversity":
         # Numeric conversion & Missing values fill on TRAIN ONLY
         numeric_df = df[feature_names + [TARGET]].apply(pd.to_numeric, errors="coerce")
@@ -469,7 +484,10 @@ def main():
         selected_features = selector.fit(x_train, y_train, feature_names)
 
     else:
-        raise ValueError(f"Invalid SELECTION_MODE '{SELECTION_MODE}'. Choose 'first', 'last', or 'diversity'.")
+        raise ValueError(
+            f"Invalid SELECTION_MODE '{SELECTION_MODE}'. "
+            f"Choose 'first', 'last', 'random', or 'diversity'."
+        )
 
     # Ensure unique preservation
     selected_features = list(dict.fromkeys(selected_features))
