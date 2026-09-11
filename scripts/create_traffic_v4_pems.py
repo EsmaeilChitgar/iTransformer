@@ -9,11 +9,11 @@ from sklearn.feature_selection import mutual_info_regression
 # Configuration
 # ============================================================
 
-INPUT_FILE = "./dataset/PEMS/PEMS07.npz"
+INPUT_FILE = "./dataset/PEMS/PEMS03.npz"
 
 # We save the selected dataset as NPZ because the original
 # iTransformer PEMS loader expects NPZ.
-OUTPUT_FILE = "./dataset/PEMS/PEMS07_v4.npz"
+OUTPUT_FILE = "./dataset/PEMS/PEMS03_v4.npz"
 
 # ------------------------------------------------------------
 # IMPORTANT:
@@ -31,7 +31,7 @@ TARGET_INDEX = -1
 #
 # We keep the last sensor as the target-like variable
 # and select this many other sensors.
-N_SELECTED = 600
+N_SELECTED = 250
 
 RANDOM_STATE = 2023
 
@@ -40,7 +40,7 @@ RANDOM_STATE = 2023
 ANALYSIS_SAMPLES = 4096
 
 # Candidate pool before diversity-aware selection.
-CANDIDATE_SIZE = 820
+CANDIDATE_SIZE = 357
 
 # Lag configuration.
 LAGS = [1, 2, 3, 6, 12, 24]
