@@ -1,0 +1,23 @@
+# Traffic - pred_len=96
+
+Model: iTransformer, Model ID: traffic_original_to_OT, Dataset: Traffic, MSE: 0.1620483547449112, MAE: 0.24314667284488678, Time: 20m 52.8s, Epochs: 10, Freq: h
+
+Model: iTransformer, Model ID: traffic_v4_600_to_OT, Dataset: Traffic, MSE: 0.16282476484775543, MAE: 0.24407173693180084, Time: 16m 52.8s, Epochs: 10, Freq: h
+
+Model: iTransformer, Model ID: traffic_v4_500_to_OT, Dataset: Traffic, MSE: 0.1643226593732834, MAE: 0.24697713553905487, Time: 13m 32.0s, Epochs: 10, Freq: h
+
+Model: iTransformer, Model ID: traffic_v4_400_to_OT, Dataset: Traffic, MSE: 0.15814398229122162, MAE: 0.24272990226745605, Time: 12m 40.1s, Epochs: 10, Freq: h
+
+
+# Traffic - pred_len=192
+
+Model: iTransformer, Model ID: traffic_original_to_OT_192, Dataset: Traffic, MSE: 0.15995991230010986, MAE: 0.2439446896314621, Time: 19m 10.6s, Epochs: 10, Freq: h
+
+Model: iTransformer, Model ID: traffic_v4_400_to_OT_192, Dataset: Traffic, MSE: 0.16248838603496552, MAE: 0.24812330305576324, Time: 13m 23.7s, Epochs: 10, Freq: h
+
+
+# ECL
+
+Model: iTransformer, Model ID: ECL_original_96_96_to_OT, Dataset: ECL, MSE: 0.4048891067504883, MAE: 0.4699939489364624, Time: 13m 59.1s, Epochs: 9, Freq: h
+
+Model: iTransformer, Model ID: ECL_v4_201_96_96_to_OT, Dataset: ECL, MSE: 0.48185062408447266, MAE: 0.5113504528999329, Time: 5m 52.3s, Epochs: 4, Freq: h

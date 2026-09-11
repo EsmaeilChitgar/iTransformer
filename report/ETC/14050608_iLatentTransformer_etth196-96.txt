@@ -1,0 +1,69 @@
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows
+
+PS C:\project\iTransformer> .\.venv\Scripts\activate
+(.venv) PS C:\project\iTransformer> .\scripts\multivariate_forecasting\ETT\iLatentTransformer_ETTh1.bat
+Args in experiment:
+Namespace(is_training=1, model_id='ETTh1_96_96', model='iLatentTransformer', data='ETTh1', root_path='./dataset/ETT-small/', data_path='ETTh1.csv', features='M', target='OT', freq='h', checkpoints='./checkpoints/', seq_len=96, label_len=48, pred_len=96, enc_in=7, dec_in=7, c_out=7, d_model=256, n_heads=8, e_layers=2, d_layers=1, d_ff=256, moving_avg=25, factor=1, distil=True, dropout=0.1, embed='timeF', activation='gelu', output_attention=False, do_predict=False, num_workers=10, itr=1, train_epochs=10, batch_size=32, patience=3, learning_rate=0.0001, des='Exp', loss='MSE', lradj='type1', use_amp=False, use_gpu=True, gpu=0, use_multi_gpu=False, devices='0,1,2,3', exp_name='MTSF', channel_independence=False, inverse=False, class_strategy='projection', target_root_path='./data/electricity/', target_data_path='electricity.csv', efficient_training=False, use_norm=True, partial_start_index=0, num_latents=32, latent_full_attention_threshold=64)
+Use GPU: cuda:0
+>>>>>>>start training : ETTh1_96_96_iLatentTransformer_ETTh1_M_ft96_sl48_ll96_pl256_dm8_nh2_el1_dl256_df1_fctimeF_ebTrue_dt32_ltExp_projection_0>>>>>>>>>>>>>>>>>>>>>>>>>>
+train 8449
+val 2785
+test 2785
+        iters: 100, epoch: 1 | loss: 0.3962676
+        speed: 0.6475s/iter; left time: 1645.1975s
+        iters: 200, epoch: 1 | loss: 0.3427491
+        speed: 0.0322s/iter; left time: 78.5069s
+Epoch: 1 cost time: 70.91853260993958
+Epoch: 1, Steps: 264 | Train Loss: 0.4157357 Vali Loss: 0.7107775 Test Loss: 0.3985646
+Validation loss decreased (inf --> 0.710778).  Saving model ...
+Updating learning rate to 0.0001
+        iters: 100, epoch: 2 | loss: 0.3764664
+        speed: 1.9035s/iter; left time: 4334.3632s
+        iters: 200, epoch: 2 | loss: 0.3784095
+        speed: 0.0330s/iter; left time: 71.9139s
+Epoch: 2 cost time: 60.139609575271606
+Epoch: 2, Steps: 264 | Train Loss: 0.3662883 Vali Loss: 0.6916183 Test Loss: 0.3883477
+Validation loss decreased (0.710778 --> 0.691618).  Saving model ...
+Updating learning rate to 5e-05
+        iters: 100, epoch: 3 | loss: 0.3475422
+        speed: 1.9102s/iter; left time: 3845.1336s
+        iters: 200, epoch: 3 | loss: 0.3168540
+        speed: 0.0343s/iter; left time: 65.5819s
+Epoch: 3 cost time: 66.18196940422058
+Epoch: 3, Steps: 264 | Train Loss: 0.3524469 Vali Loss: 0.6771765 Test Loss: 0.3866242
+Validation loss decreased (0.691618 --> 0.677177).  Saving model ...
+Updating learning rate to 2.5e-05
+        iters: 100, epoch: 4 | loss: 0.3763458
+        speed: 1.7397s/iter; left time: 3042.7077s
+        iters: 200, epoch: 4 | loss: 0.3411548
+        speed: 0.0331s/iter; left time: 54.5062s
+Epoch: 4 cost time: 61.30400061607361
+Epoch: 4, Steps: 264 | Train Loss: 0.3449986 Vali Loss: 0.6809574 Test Loss: 0.3870175
+EarlyStopping counter: 1 out of 3
+Updating learning rate to 1.25e-05
+        iters: 100, epoch: 5 | loss: 0.3466151
+        speed: 1.7747s/iter; left time: 2635.4249s
+        iters: 200, epoch: 5 | loss: 0.4088837
+        speed: 0.0366s/iter; left time: 50.6433s
+Epoch: 5 cost time: 65.9700756072998
+Epoch: 5, Steps: 264 | Train Loss: 0.3411690 Vali Loss: 0.6806884 Test Loss: 0.3870169
+EarlyStopping counter: 2 out of 3
+Updating learning rate to 6.25e-06
+        iters: 100, epoch: 6 | loss: 0.3442301
+        speed: 2.1089s/iter; left time: 2575.0172s
+        iters: 200, epoch: 6 | loss: 0.3331825
+        speed: 0.0349s/iter; left time: 39.1256s
+Epoch: 6 cost time: 68.7703800201416
+Epoch: 6, Steps: 264 | Train Loss: 0.3395302 Vali Loss: 0.6805222 Test Loss: 0.3865418
+EarlyStopping counter: 3 out of 3
+Early stopping
+>>>>>>>testing : ETTh1_96_96_iLatentTransformer_ETTh1_M_ft96_sl48_ll96_pl256_dm8_nh2_el1_dl256_df1_fctimeF_ebTrue_dt32_ltExp_projection_0<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+test 2785
+test shape: (2785, 1, 96, 7) (2785, 1, 96, 7)
+test shape: (2785, 96, 7) (2785, 96, 7)
+mse:0.3866242468357086, mae:0.40317150950431824
+All experiments completed.
+Press any key to continue . . .

@@ -1,0 +1,101 @@
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows
+
+PS C:\project\iTransformer> .\.venv\Scripts\activate
+(.venv) PS C:\project\iTransformer> .\scripts\multivariate_forecasting\ETT\ixTransformer_ETTh1.bat
+Args in experiment:
+Namespace(is_training=1, model_id='ETTh1_96_96', model='iTimeMixerLatentTransformer', data='ETTh1', root_path='./dataset/ETT-small/', data_path='ETTh1.csv', features='M', target='OT', freq='h', checkpoints='./checkpoints/', seq_len=96, label_len=48, pred_len=96, enc_in=7, dec_in=7, c_out=7, d_model=256, n_heads=8, e_layers=2, d_layers=1, d_ff=256, moving_avg=25, factor=1, distil=True, dropout=0.1, embed='timeF', activation='gelu', output_attention=False, do_predict=False, num_workers=10, itr=1, train_epochs=10, batch_size=32, patience=3, learning_rate=0.0001, des='Exp', loss='MSE', lradj='type1', use_amp=False, use_gpu=True, gpu=0, use_multi_gpu=False, devices='0,1,2,3', exp_name='MTSF', channel_independence=False, inverse=False, class_strategy='projection', target_root_path='./data/electricity/', target_data_path='electricity.csv', efficient_training=False, use_norm=True, partial_start_index=0, temporal_scales='3,7,15', num_latents=32, latent_full_attention_threshold=64)
+Use GPU: cuda:0
+>>>>>>>start training : ETTh1_96_96_iTimeMixerLatentTransformer_ETTh1_M_ft96_sl48_ll96_pl256_dm8_nh2_el1_dl256_df1_fctimeF_ebTrue_dt3-7-15-M32_hyExp_projection_0>>>>>>>>>>>>>>>>>>>>>>>>>>
+train 8449
+val 2785
+test 2785
+        iters: 100, epoch: 1 | loss: 0.4210103
+        speed: 0.6059s/iter; left time: 1539.5631s
+        iters: 200, epoch: 1 | loss: 0.3764044
+        speed: 0.0443s/iter; left time: 108.1024s
+Epoch: 1 cost time: 68.68649578094482
+Epoch: 1, Steps: 264 | Train Loss: 0.4202258 Vali Loss: 0.7114710 Test Loss: 0.4006089
+Validation loss decreased (inf --> 0.711471).  Saving model ...
+Updating learning rate to 0.0001
+        iters: 100, epoch: 2 | loss: 0.3554919
+        speed: 1.8620s/iter; left time: 4239.7988s
+        iters: 200, epoch: 2 | loss: 0.3578380
+        speed: 0.0400s/iter; left time: 87.0781s
+Epoch: 2 cost time: 64.58224749565125
+Epoch: 2, Steps: 264 | Train Loss: 0.3677549 Vali Loss: 0.6911424 Test Loss: 0.3902969
+Validation loss decreased (0.711471 --> 0.691142).  Saving model ...
+Updating learning rate to 5e-05
+        iters: 100, epoch: 3 | loss: 0.3248553
+        speed: 1.9513s/iter; left time: 3927.9782s
+        iters: 200, epoch: 3 | loss: 0.3583207
+        speed: 0.0405s/iter; left time: 77.3964s
+Epoch: 3 cost time: 68.16146469116211
+Epoch: 3, Steps: 264 | Train Loss: 0.3553235 Vali Loss: 0.6828852 Test Loss: 0.3861756
+Validation loss decreased (0.691142 --> 0.682885).  Saving model ...
+Updating learning rate to 2.5e-05
+        iters: 100, epoch: 4 | loss: 0.3781896
+        speed: 2.0537s/iter; left time: 3591.9132s
+        iters: 200, epoch: 4 | loss: 0.3714883
+        speed: 0.0420s/iter; left time: 69.2619s
+Epoch: 4 cost time: 73.87140893936157
+Epoch: 4, Steps: 264 | Train Loss: 0.3488282 Vali Loss: 0.6784035 Test Loss: 0.3857494
+Validation loss decreased (0.682885 --> 0.678403).  Saving model ...
+Updating learning rate to 1.25e-05
+        iters: 100, epoch: 5 | loss: 0.4233399
+        speed: 2.0398s/iter; left time: 3029.0506s
+        iters: 200, epoch: 5 | loss: 0.4160292
+        speed: 0.0432s/iter; left time: 59.7991s
+Epoch: 5 cost time: 65.97019624710083
+Epoch: 5, Steps: 264 | Train Loss: 0.3457458 Vali Loss: 0.6755024 Test Loss: 0.3843991
+Validation loss decreased (0.678403 --> 0.675502).  Saving model ...
+Updating learning rate to 6.25e-06
+        iters: 100, epoch: 6 | loss: 0.3120242
+        speed: 1.9045s/iter; left time: 2325.3480s
+        iters: 200, epoch: 6 | loss: 0.3405061
+        speed: 0.0358s/iter; left time: 40.1542s
+Epoch: 6 cost time: 65.49294304847717
+Epoch: 6, Steps: 264 | Train Loss: 0.3439904 Vali Loss: 0.6761217 Test Loss: 0.3843045
+EarlyStopping counter: 1 out of 3
+Updating learning rate to 3.125e-06
+        iters: 100, epoch: 7 | loss: 0.3868744
+        speed: 1.9115s/iter; left time: 1829.2726s
+        iters: 200, epoch: 7 | loss: 0.3354917
+        speed: 0.0433s/iter; left time: 37.0744s
+Epoch: 7 cost time: 66.52020740509033
+Epoch: 7, Steps: 264 | Train Loss: 0.3431367 Vali Loss: 0.6754295 Test Loss: 0.3845481
+Validation loss decreased (0.675502 --> 0.675430).  Saving model ...
+Updating learning rate to 1.5625e-06
+        iters: 100, epoch: 8 | loss: 0.3457759
+        speed: 2.1472s/iter; left time: 1487.9854s
+        iters: 200, epoch: 8 | loss: 0.3035475
+        speed: 0.0439s/iter; left time: 26.0136s
+Epoch: 8 cost time: 71.06272101402283
+Epoch: 8, Steps: 264 | Train Loss: 0.3428273 Vali Loss: 0.6748379 Test Loss: 0.3846000
+Validation loss decreased (0.675430 --> 0.674838).  Saving model ...
+Updating learning rate to 7.8125e-07
+        iters: 100, epoch: 9 | loss: 0.3317745
+        speed: 2.1959s/iter; left time: 942.0400s
+        iters: 200, epoch: 9 | loss: 0.3463709
+        speed: 0.0431s/iter; left time: 14.1909s
+Epoch: 9 cost time: 79.05617165565491
+Epoch: 9, Steps: 264 | Train Loss: 0.3424795 Vali Loss: 0.6747570 Test Loss: 0.3846138
+Validation loss decreased (0.674838 --> 0.674757).  Saving model ...
+Updating learning rate to 3.90625e-07
+        iters: 100, epoch: 10 | loss: 0.3351575
+        speed: 2.1321s/iter; left time: 351.7951s
+        iters: 200, epoch: 10 | loss: 0.4025448
+        speed: 0.0404s/iter; left time: 2.6244s
+Epoch: 10 cost time: 71.85287022590637
+Epoch: 10, Steps: 264 | Train Loss: 0.3425181 Vali Loss: 0.6752565 Test Loss: 0.3846076
+EarlyStopping counter: 1 out of 3
+Updating learning rate to 1.953125e-07
+>>>>>>>testing : ETTh1_96_96_iTimeMixerLatentTransformer_ETTh1_M_ft96_sl48_ll96_pl256_dm8_nh2_el1_dl256_df1_fctimeF_ebTrue_dt3-7-15-M32_hyExp_projection_0<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+test 2785
+test shape: (2785, 1, 96, 7) (2785, 1, 96, 7)
+test shape: (2785, 96, 7) (2785, 96, 7)
+mse:0.3846137225627899, mae:0.4032626450061798
+All experiments completed.
+Press any key to continue . . .
