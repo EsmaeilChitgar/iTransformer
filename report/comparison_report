@@ -8,6 +8,12 @@ Model: iTransformer, Model ID: traffic_v4_500_to_OT, Dataset: Traffic, MSE: 0.16
 
 Model: iTransformer, Model ID: traffic_v4_400_to_OT, Dataset: Traffic, MSE: 0.15814398229122162, MAE: 0.24272990226745605, Time: 12m 40.1s, Epochs: 10, Freq: h
 
+Model: iTransformer, Model ID: traffic_v4_first_400_to_OT, Dataset: Traffic, MSE: 0.16204170882701874, MAE: 0.2435506284236908, Time: 14m 38.3s, Epochs: 10, Freq: h
+
+Model: iTransformer, Model ID: traffic_v4_last_400_to_OT, Dataset: Traffic, MSE: 0.16246244311332703, MAE: 0.24414372444152832, Time: 14m 23.7s, Epochs: 10, Freq: h
+
+Model: iTransformer, Model ID: traffic_v4_last_600_to_OT, Dataset: Traffic, MSE: N/A (interrupted), MAE: N/A (interrupted), Time: 16m 52.8s, Epochs: 10, Freq: h
+
 
 # Traffic - pred_len=192
 
