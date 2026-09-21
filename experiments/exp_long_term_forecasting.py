@@ -1058,18 +1058,22 @@ class Exp_Long_Term_Forecast(Exp_Basic):
     def rank_ablation(
             self,
             flag='val',
-            max_batches=16,
-            ranks='1,2,4,8,16,32,64'
+            max_batches=4,
+            ranks='1,2,4,8,16,32'
     ):
         """
         Functional rank ablation using an already-trained checkpoint.
 
-        rank=0 is the full-attention reference.
-        rank>0 replaces every attention matrix with its truncated SVD
-        approximation.
+        rank=0:
+            original full attention.
 
-        This experiment measures forecasting degradation only.
-        It is NOT a runtime benchmark.
+        rank>0:
+            replace each attention matrix with its truncated
+            rank-r SVD approximation.
+
+        This experiment measures forecasting sensitivity to
+        attention rank. It is NOT a runtime benchmark because
+        the full attention matrix and its SVD are still computed.
         """
 
         model = self.model.module if hasattr(
@@ -1082,8 +1086,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         if isinstance(ranks, str):
             for value in ranks.split(','):
                 value = value.strip()
+
                 if value:
-                    rank_values.append(int(value))
+                    rank_values.append(
+                        int(value)
+                    )
         else:
             rank_values.extend(ranks)
 
@@ -1097,6 +1104,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         print('Split:', flag)
         print('Batches:', max_batches)
         print('Ranks:', rank_values)
+        print('Samples per batch: 1')
         print('=' * 90)
 
         data_set, data_loader = self._get_data(
@@ -1129,11 +1137,16 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     if batch_idx >= max_batches:
                         break
 
-                    batch_x = batch_x.float().to(
+                    # -------------------------------------------------
+                    # Use exactly ONE sample from the DataLoader batch.
+                    # This keeps this screening experiment lightweight.
+                    # -------------------------------------------------
+
+                    batch_x = batch_x[:1].float().to(
                         self.device
                     )
 
-                    batch_y = batch_y.float().to(
+                    batch_y = batch_y[:1].float().to(
                         self.device
                     )
 
@@ -1145,36 +1158,44 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         batch_y_mark = None
                     else:
                         batch_x_mark = (
-                            batch_x_mark
+                            batch_x_mark[:1]
                             .float()
                             .to(self.device)
                         )
 
                         batch_y_mark = (
-                            batch_y_mark
+                            batch_y_mark[:1]
                             .float()
                             .to(self.device)
                         )
 
+                    # -------------------------------------------------
+                    # Decoder input
+                    # -------------------------------------------------
+
                     dec_inp = torch.zeros_like(
                         batch_y[
-                            :,
-                            -self.args.pred_len:,
-                            :
+                        :,
+                        -self.args.pred_len:,
+                        :
                         ]
                     ).float()
 
                     dec_inp = torch.cat(
                         [
                             batch_y[
-                                :,
-                                :self.args.label_len,
-                                :
+                            :,
+                            :self.args.label_len,
+                            :
                             ],
                             dec_inp
                         ],
                         dim=1
                     ).float().to(self.device)
+
+                    # -------------------------------------------------
+                    # Evaluate every requested rank
+                    # -------------------------------------------------
 
                     for rank in rank_values:
 
@@ -1189,6 +1210,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             batch_y_mark
                         )
 
+                        # In the current configuration output_attention
+                        # is False, but keep this for compatibility.
                         if self.args.output_attention:
                             outputs = outputs[0]
 
@@ -1199,16 +1222,20 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         )
 
                         outputs = outputs[
-                            :,
-                            -self.args.pred_len:,
-                            f_dim:
-                        ]
+                                  :,
+                                  -self.args.pred_len:,
+                                  f_dim:
+                                  ]
 
                         true = batch_y[
-                            :,
-                            -self.args.pred_len:,
-                            f_dim:
-                        ]
+                               :,
+                               -self.args.pred_len:,
+                               f_dim:
+                               ]
+
+                        # -------------------------------------------------
+                        # Forecasting metrics
+                        # -------------------------------------------------
 
                         batch_mse = torch.mean(
                             (outputs - true) ** 2
@@ -1230,6 +1257,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             )
                         )
 
+                    # Always restore full attention after each batch.
+                    model.set_rank_ablation(0)
+
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
                     print(
                         'Ablation batch '
                         f'{batch_idx + 1}/{max_batches} completed.'
@@ -1237,11 +1270,15 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         finally:
 
+            # Always leave the model in normal full-attention mode.
             model.set_rank_ablation(0)
             model.eval()
 
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
         # -------------------------------------------------------------
-        # Aggregate
+        # Aggregate results
         # -------------------------------------------------------------
 
         rows = []
@@ -1258,8 +1295,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             )
         )
 
-        for rank in rank_values:
+        print('\n' + '=' * 90)
+        print('FUNCTIONAL RANK ABLATION RESULTS')
+        print('=' * 90)
 
+        for rank in rank_values:
             mse = float(
                 np.mean(
                     mse_values[rank]
@@ -1273,15 +1313,21 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             )
 
             mse_gap = (
-                100.0
-                * (mse - full_mse)
-                / max(abs(full_mse), 1e-12)
+                    100.0
+                    * (mse - full_mse)
+                    / max(
+                abs(full_mse),
+                1e-12
+            )
             )
 
             mae_gap = (
-                100.0
-                * (mae - full_mae)
-                / max(abs(full_mae), 1e-12)
+                    100.0
+                    * (mae - full_mae)
+                    / max(
+                abs(full_mae),
+                1e-12
+            )
             )
 
             row = {
@@ -1301,11 +1347,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 f'Rank {rank:>3}: '
                 f'MSE={mse:.8f}, '
                 f'MAE={mae:.8f}, '
-                f'MSE gap={mse_gap:+.3f}%'
+                f'MSE gap={mse_gap:+.3f}%, '
+                f'MAE gap={mae_gap:+.3f}%'
             )
 
         # -------------------------------------------------------------
-        # Automatic screening
+        # Functional screening
         # -------------------------------------------------------------
 
         non_full_rows = [
@@ -1317,30 +1364,47 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         within_1_percent = [
             row['rank']
             for row in non_full_rows
-            if abs(
-                row['mse_gap_percent_vs_full']
-            ) <= 1.0
+            if row['mse_gap_percent_vs_full'] <= 1.0
+               and row['mse_gap_percent_vs_full'] >= -1.0
         ]
 
         within_3_percent = [
             row['rank']
             for row in non_full_rows
-            if abs(
-                row['mse_gap_percent_vs_full']
-            ) <= 3.0
+            if row['mse_gap_percent_vs_full'] <= 3.0
+               and row['mse_gap_percent_vs_full'] >= -3.0
         ]
 
         if within_1_percent:
 
-            screen = 'STRONG_FUNCTIONAL_LOW_RANK_EVIDENCE'
+            screen = (
+                'STRONG_FUNCTIONAL_LOW_RANK_EVIDENCE'
+            )
 
         elif within_3_percent:
 
-            screen = 'PROMISING_BUT_REQUIRES_FURTHER_VALIDATION'
+            screen = (
+                'PROMISING_BUT_REQUIRES_FURTHER_VALIDATION'
+            )
 
         else:
 
-            screen = 'WEAK_FUNCTIONAL_LOW_RANK_EVIDENCE'
+            screen = (
+                'WEAK_FUNCTIONAL_LOW_RANK_EVIDENCE'
+            )
+
+        # Smallest rank within 1% and 3%.
+        smallest_rank_1 = (
+            min(within_1_percent)
+            if within_1_percent
+            else None
+        )
+
+        smallest_rank_3 = (
+            min(within_3_percent)
+            if within_3_percent
+            else None
+        )
 
         # -------------------------------------------------------------
         # Save CSV
@@ -1398,11 +1462,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             'dataset': self.args.data,
             'split': flag,
             'batches': max_batches,
+            'samples_per_batch': 1,
             'ranks': rank_values,
             'full_mse': full_mse,
             'full_mae': full_mae,
             'within_1_percent_ranks': within_1_percent,
             'within_3_percent_ranks': within_3_percent,
+            'smallest_rank_within_1_percent': smallest_rank_1,
+            'smallest_rank_within_3_percent': smallest_rank_3,
             'screen': screen
         }
 
@@ -1441,12 +1508,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             f.write(
                 f'Full-attention subset MSE: '
-                f'{full_mse}\n'
+                f'{full_mse:.10f}\n'
             )
 
             f.write(
                 f'Full-attention subset MAE: '
-                f'{full_mae}\n\n'
+                f'{full_mae:.10f}\n\n'
             )
 
             f.write(
@@ -1456,7 +1523,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             f.write(
                 f'Ranks within 3% MSE: '
-                f'{within_3_percent}\n\n'
+                f'{within_3_percent}\n'
+            )
+
+            f.write(
+                f'Smallest rank within 1%: '
+                f'{smallest_rank_1}\n'
+            )
+
+            f.write(
+                f'Smallest rank within 3%: '
+                f'{smallest_rank_3}\n\n'
             )
 
             f.write(
@@ -1465,33 +1542,55 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             f.write(
                 '\nNOTE: This is a functional ablation. '
-                'It does not measure speed because full '
-                'attention and SVD are still computed.\n'
+                'It does not measure runtime or memory '
+                'benefits of an efficient implementation.\n'
             )
+
+        # -------------------------------------------------------------
+        # Console summary
+        # -------------------------------------------------------------
 
         print('\n' + '=' * 90)
         print('RANK ABLATION SUMMARY')
         print('=' * 90)
+
         print(
-            f'Full subset MSE: {full_mse:.8f}'
+            f'Full subset MSE: '
+            f'{full_mse:.8f}'
         )
+
         print(
-            f'Full subset MAE: {full_mae:.8f}'
+            f'Full subset MAE: '
+            f'{full_mae:.8f}'
         )
+
         print(
-            f'Ranks within 1%: {within_1_percent}'
+            f'Ranks within 1%: '
+            f'{within_1_percent}'
         )
+
         print(
-            f'Ranks within 3%: {within_3_percent}'
+            f'Ranks within 3%: '
+            f'{within_3_percent}'
         )
+
+        print(
+            f'Smallest rank within 1%: '
+            f'{smallest_rank_1}'
+        )
+
+        print(
+            f'Smallest rank within 3%: '
+            f'{smallest_rank_3}'
+        )
+
         print(
             f'Screen: {screen}'
         )
+
         print('=' * 90)
 
-        print(
-            'Saved:'
-        )
+        print('Saved:')
         print(csv_path)
         print(meta_path)
         print(decision_path)

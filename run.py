@@ -102,9 +102,9 @@ if __name__ == '__main__':
                         help='checkpoint path used for rank analysis')
     parser.add_argument('--rank_ablation', action='store_true',
                         help='run functional rank ablation')
-    parser.add_argument('--rank_ablation_batches', type=int, default=16,
+    parser.add_argument('--rank_ablation_batches', type=int, default=4,
                         help='number of validation batches used for rank ablation')
-    parser.add_argument('--rank_ablation_ranks', type=str, default='1,2,4,8,16,32,64',
+    parser.add_argument('--rank_ablation_ranks', type=str, default='1,2,4,8,16,32',
                         help='comma-separated attention ranks')
 
     args = parser.parse_args()

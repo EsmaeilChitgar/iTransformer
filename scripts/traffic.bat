@@ -62,8 +62,8 @@ python -u run.py ^
   --rank_diagnostic_batches 32 ^
   --rank_diagnostic_samples 1 ^
   --rank_ablation ^
-  --rank_ablation_batches 16 ^
-  --rank_ablation_ranks "1,2,4,8,16,32,64"
+  --rank_ablation_batches 4 ^
+  --rank_ablation_ranks "1,2,4,8,16,32"
 
 if errorlevel 1 (
     echo.
