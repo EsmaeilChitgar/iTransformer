@@ -96,6 +96,16 @@ if __name__ == '__main__':
                         help='number of batches used for rank diagnostic')
     parser.add_argument('--rank_diagnostic_samples', type=int, default=1,
                         help='number of samples per batch analyzed for rank diagnostic')
+    parser.add_argument('--rank_analysis_only', action='store_true',
+                        help='run rank analysis using an existing checkpoint without training')
+    parser.add_argument('--checkpoint_path', type=str, default='',
+                        help='checkpoint path used for rank analysis')
+    parser.add_argument('--rank_ablation', action='store_true',
+                        help='run functional rank ablation')
+    parser.add_argument('--rank_ablation_batches', type=int, default=16,
+                        help='number of validation batches used for rank ablation')
+    parser.add_argument('--rank_ablation_ranks', type=str, default='1,2,4,8,16,32,64',
+                        help='comma-separated attention ranks')
 
     args = parser.parse_args()
 
@@ -115,7 +125,53 @@ if __name__ == '__main__':
     else: # MTSF: multivariate time series forecasting
         Exp = Exp_Long_Term_Forecast
 
-    if args.is_training:
+
+    if args.rank_analysis_only:
+        if not args.checkpoint_path:
+            raise ValueError('checkpoint_path is required when rank_analysis_only is enabled')
+
+        exp = Exp(args)
+
+        print('>>>>>>> loading checkpoint : {} <<<<<<<<<<<<<<<<<<<<<<'.format(
+            args.checkpoint_path
+        ))
+
+        checkpoint = torch.load(
+            args.checkpoint_path,
+            map_location=exp.device
+        )
+
+        exp.model.load_state_dict(checkpoint)
+
+        print('>>>>>>> checkpoint loaded <<<<<<<<<<<<<<<<<<<<<<')
+
+        if args.rank_diagnostic:
+            print('>>>>>>> start rank diagnostic : {} <<<<<<<<<<<<<<<<<<<<<<'.format(
+                args.rank_diagnostic_split
+            ))
+
+            exp.rank_diagnostic(
+                flag=args.rank_diagnostic_split,
+                max_batches=args.rank_diagnostic_batches,
+                max_samples=args.rank_diagnostic_samples
+            )
+
+            print('>>>>>>> rank diagnostic finished <<<<<<<<<<<<<<<<<<<<<<')
+
+        if args.rank_ablation:
+            print('>>>>>>> start rank ablation <<<<<<<<<<<<<<<<<<<<<<')
+
+            exp.rank_ablation(
+                flag=args.rank_diagnostic_split,
+                max_batches=args.rank_ablation_batches,
+                ranks=args.rank_ablation_ranks
+            )
+
+            print('>>>>>>> rank ablation finished <<<<<<<<<<<<<<<<<<<<<<')
+
+        torch.cuda.empty_cache()
+
+    elif args.is_training:
         for ii in range(args.itr):
             # setting record of experiments
             setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(

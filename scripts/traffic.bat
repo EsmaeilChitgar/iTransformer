@@ -1,29 +1,38 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-
 set CUDA_VISIBLE_DEVICES=0
 
+set "CHECKPOINT=.\checkpoints\traffic_96_96_rank_diag_iTransformer_custom_M_ft96_sl48_ll96_pl512_dm8_nh4_el1_dl512_df1_fctimeF_ebTrue_dttest_projection_0\checkpoint.pth"
+
 echo ==========================================================
-echo iTransformer Traffic - Train + Rank Diagnostic
+echo iTransformer Traffic - Checkpoint Rank Analysis
 echo ==========================================================
-echo Working directory:
-cd
-echo ==========================================================
+echo.
+echo Checkpoint:
+echo %CHECKPOINT%
+echo.
+
+if not exist "%CHECKPOINT%" (
+    echo ==========================================================
+    echo ERROR: CHECKPOINT NOT FOUND
+    echo ==========================================================
+    pause
+    exit /b 1
+)
+
+echo Checkpoint found.
+echo.
 
 set "START_TIME=%TIME%"
 
-echo.
-echo ==========================================
-echo Experiment 1
-echo Traffic 96 -> 96
-echo C = 862
-echo ==========================================
+echo ==========================================================
+echo Rank Stability + Functional Rank Ablation
 echo Start Time: !START_TIME!
-echo ==========================================
+echo ==========================================================
 
 python -u run.py ^
-  --is_training 1 ^
+  --is_training 0 ^
   --model_id traffic_96_96_rank_diag ^
   --model iTransformer ^
   --data custom ^
@@ -42,23 +51,24 @@ python -u run.py ^
   --e_layers 4 ^
   --d_layers 1 ^
   --d_ff 512 ^
-  --factor 1 ^
-  --dropout 0.1 ^
-  --embed timeF ^
-  --activation gelu ^
   --batch_size 16 ^
   --learning_rate 0.001 ^
   --train_epochs 10 ^
   --num_workers 1 ^
+  --rank_analysis_only ^
+  --checkpoint_path "%CHECKPOINT%" ^
   --rank_diagnostic ^
   --rank_diagnostic_split val ^
-  --rank_diagnostic_batches 4 ^
-  --rank_diagnostic_samples 1
+  --rank_diagnostic_batches 32 ^
+  --rank_diagnostic_samples 1 ^
+  --rank_ablation ^
+  --rank_ablation_batches 16 ^
+  --rank_ablation_ranks "1,2,4,8,16,32,64"
 
 if errorlevel 1 (
     echo.
     echo ==========================================================
-    echo EXPERIMENT FAILED
+    echo ANALYSIS FAILED
     echo ==========================================================
     pause
     exit /b 1
@@ -67,41 +77,48 @@ if errorlevel 1 (
 set "END_TIME=%TIME%"
 
 echo.
-echo ==========================================
-echo Experiment completed.
+echo ==========================================================
+echo Analysis completed.
 echo End Time: !END_TIME!
-echo ==========================================
+echo ==========================================================
 
 call :CalculateDuration "!START_TIME!" "!END_TIME!" DURATION
 
 echo Duration: !DURATION!
 
 echo.
-echo ==========================================
-echo Rank Diagnostic Result
-echo ==========================================
+echo ==========================================================
+echo IMPORTANT RESULTS
+echo ==========================================================
 
-if exist "rank_diagnostic\custom_val_DECISION.txt" (
-    type "rank_diagnostic\custom_val_DECISION.txt"
+echo.
+echo ---- Rank Stability ----
+if exist "rank_diagnostic\custom_val_DECISION_b32.txt" (
+    type "rank_diagnostic\custom_val_DECISION_b32.txt"
 ) else (
-    echo Diagnostic result file not found.
+    echo Stability decision file not found.
 )
 
 echo.
-echo ==========================================
-echo Output files
-echo ==========================================
-
-echo rank_diagnostic\custom_val_DECISION.txt
-echo rank_diagnostic\custom_val_attention_summary.csv
-echo rank_diagnostic\custom_val_representation_summary.csv
-echo rank_diagnostic\custom_val_diagnostic_meta.json
-echo rank_diagnostic\custom_val_singular_spectra.npz
+echo ---- Functional Rank Ablation ----
+if exist "rank_diagnostic\custom_val_ablation_b16_DECISION.txt" (
+    type "rank_diagnostic\custom_val_ablation_b16_DECISION.txt"
+) else (
+    echo Ablation decision file not found.
+)
 
 echo.
-echo ==========================================
-echo ALL EXPERIMENTS COMPLETED.
-echo ==========================================
+echo ==========================================================
+echo Output files
+echo ==========================================================
+
+dir /b rank_diagnostic\custom_val_*b32*
+dir /b rank_diagnostic\custom_val_*ablation*
+
+echo.
+echo ==========================================================
+echo ALL ANALYSIS COMPLETED.
+echo ==========================================================
 
 pause
 exit /b 0

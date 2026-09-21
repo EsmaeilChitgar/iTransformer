@@ -138,56 +138,79 @@ class FullAttention(nn.Module):
         self.mask_flag = mask_flag
         self.output_attention = output_attention
         self.dropout = nn.Dropout(attention_dropout)
-        # Runtime-only capture flag.
-        # False during all normal training/testing.
         self.capture_attention = False
+        self.rank_ablation = 0
 
-    def forward(self, queries, keys, values, attn_mask,
-                tau=None, delta=None):
-
+    def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
         B, L, H, E = queries.shape
         _, S, _, D = values.shape
-
         scale = self.scale or 1. / sqrt(E)
 
-        scores = torch.einsum(
-            "blhe,bshe->bhls",
-            queries,
-            keys
-        )
+        scores = torch.einsum("blhe,bshe->bhls", queries, keys)
 
         if self.mask_flag:
             if attn_mask is None:
-                attn_mask = TriangularCausalMask(
-                    B,
-                    L,
-                    device=queries.device
-                )
+                attn_mask = TriangularCausalMask(B, L, device=queries.device)
 
-            scores.masked_fill_(
-                attn_mask.mask,
-                -np.inf
+            scores.masked_fill_(attn_mask.mask, -np.inf)
+
+        A_raw = torch.softmax(scale * scores, dim=-1)
+
+        # -------------------------------------------------------------
+        # Functional rank ablation
+        #
+        # rank_ablation = 0:
+        #     original full attention
+        #
+        # rank_ablation > 0:
+        #     A ≈ U_r S_r V_r^T
+        #
+        # Important:
+        # this is an ORACLE / FUNCTIONAL experiment.
+        # It still computes the full attention matrix.
+        # It is NOT a speed experiment.
+        # -------------------------------------------------------------
+        if self.rank_ablation > 0:
+
+            r = min(
+                self.rank_ablation,
+                A_raw.shape[-1],
+                A_raw.shape[-2]
             )
 
-        # IMPORTANT:
-        # Keep the raw attention matrix for diagnostics.
-        A_raw = torch.softmax(
-            scale * scores,
-            dim=-1
-        )
+            U, S_values, Vh = torch.linalg.svd(
+                A_raw,
+                full_matrices=False
+            )
 
-        A = self.dropout(A_raw)
+            U_r = U[..., :r]
+            S_r = S_values[..., :r]
+            Vh_r = Vh[..., :r, :]
 
-        V = torch.einsum(
-            "bhls,bshd->blhd",
-            A,
-            values
-        )
+            # Vh_r @ values
+            compressed_values = torch.einsum(
+                "bhrs,bshd->bhrd",
+                Vh_r,
+                values
+            )
 
-        # During normal training, nothing is returned and the
-        # attention matrix can be released immediately.
-        #
-        # During diagnostic mode, return RAW attention before dropout.
+            # U_r @ (S_r * compressed_values)
+            V = torch.einsum(
+                "bhlr,bhrd->blhd",
+                U_r * S_r.unsqueeze(-2),
+                compressed_values
+            )
+
+        else:
+
+            A = self.dropout(A_raw)
+
+            V = torch.einsum(
+                "bhls,bshd->blhd",
+                A,
+                values
+            )
+
         if self.output_attention or self.capture_attention:
             return V.contiguous(), A_raw.contiguous()
 

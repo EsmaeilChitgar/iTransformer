@@ -761,13 +761,35 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 ]
 
                 for metric_name in numeric_keys:
+
+                    values = np.array(
+                        [
+                            item[metric_name]
+                            for item in group
+                        ],
+                        dtype=np.float64
+                    )
+
                     row[metric_name] = float(
-                        np.mean(
-                            [
-                                item[metric_name]
-                                for item in group
-                            ]
-                        )
+                        np.mean(values)
+                    )
+
+                    row[
+                        metric_name + '_std'
+                    ] = float(
+                        np.std(values)
+                    )
+
+                    row[
+                        metric_name + '_min'
+                    ] = float(
+                        np.min(values)
+                    )
+
+                    row[
+                        metric_name + '_max'
+                    ] = float(
+                        np.max(values)
                     )
 
                 summary.append(row)
@@ -851,7 +873,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         # Representation CSV
         representation_csv = os.path.join(
             save_dir,
-            f'{self.args.data}_{flag}_representation_summary.csv'
+            f'{self.args.data}_{flag}_representation_summary_b{max_batches}.csv'
         )
 
         if representation_summary:
@@ -879,7 +901,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         # Attention CSV
         attention_csv = os.path.join(
             save_dir,
-            f'{self.args.data}_{flag}_attention_summary.csv'
+            f'{self.args.data}_{flag}_attention_summary_b{max_batches}.csv'
         )
 
         if attention_summary:
@@ -907,7 +929,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         # Raw spectra
         spectrum_path = os.path.join(
             save_dir,
-            f'{self.args.data}_{flag}_singular_spectra.npz'
+            f'{self.args.data}_{flag}_singular_spectra_b{max_batches}.npz'
         )
 
         np.savez_compressed(
@@ -936,7 +958,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         meta_path = os.path.join(
             save_dir,
-            f'{self.args.data}_{flag}_diagnostic_meta.json'
+            f'{self.args.data}_{flag}_diagnostic_meta_b{max_batches}.json'
         )
 
         with open(
@@ -953,7 +975,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         # Decision text
         decision_path = os.path.join(
             save_dir,
-            f'{self.args.data}_{flag}_DECISION.txt'
+            f'{self.args.data}_{flag}_DECISION_b{max_batches}.txt'
         )
 
         with open(
@@ -1032,3 +1054,444 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         print(decision_path)
 
         print('=' * 90)
+
+    def rank_ablation(
+            self,
+            flag='val',
+            max_batches=16,
+            ranks='1,2,4,8,16,32,64'
+    ):
+        """
+        Functional rank ablation using an already-trained checkpoint.
+
+        rank=0 is the full-attention reference.
+        rank>0 replaces every attention matrix with its truncated SVD
+        approximation.
+
+        This experiment measures forecasting degradation only.
+        It is NOT a runtime benchmark.
+        """
+
+        model = self.model.module if hasattr(
+            self.model,
+            'module'
+        ) else self.model
+
+        rank_values = [0]
+
+        if isinstance(ranks, str):
+            for value in ranks.split(','):
+                value = value.strip()
+                if value:
+                    rank_values.append(int(value))
+        else:
+            rank_values.extend(ranks)
+
+        rank_values = sorted(
+            list(set(rank_values))
+        )
+
+        print('\n' + '=' * 90)
+        print('FUNCTIONAL RANK ABLATION')
+        print('=' * 90)
+        print('Split:', flag)
+        print('Batches:', max_batches)
+        print('Ranks:', rank_values)
+        print('=' * 90)
+
+        data_set, data_loader = self._get_data(
+            flag=flag
+        )
+
+        model.eval()
+
+        mse_values = {
+            rank: []
+            for rank in rank_values
+        }
+
+        mae_values = {
+            rank: []
+            for rank in rank_values
+        }
+
+        try:
+
+            with torch.no_grad():
+
+                for batch_idx, (
+                        batch_x,
+                        batch_y,
+                        batch_x_mark,
+                        batch_y_mark
+                ) in enumerate(data_loader):
+
+                    if batch_idx >= max_batches:
+                        break
+
+                    batch_x = batch_x.float().to(
+                        self.device
+                    )
+
+                    batch_y = batch_y.float().to(
+                        self.device
+                    )
+
+                    if (
+                            'PEMS' in self.args.data
+                            or 'Solar' in self.args.data
+                    ):
+                        batch_x_mark = None
+                        batch_y_mark = None
+                    else:
+                        batch_x_mark = (
+                            batch_x_mark
+                            .float()
+                            .to(self.device)
+                        )
+
+                        batch_y_mark = (
+                            batch_y_mark
+                            .float()
+                            .to(self.device)
+                        )
+
+                    dec_inp = torch.zeros_like(
+                        batch_y[
+                            :,
+                            -self.args.pred_len:,
+                            :
+                        ]
+                    ).float()
+
+                    dec_inp = torch.cat(
+                        [
+                            batch_y[
+                                :,
+                                :self.args.label_len,
+                                :
+                            ],
+                            dec_inp
+                        ],
+                        dim=1
+                    ).float().to(self.device)
+
+                    for rank in rank_values:
+
+                        model.set_rank_ablation(
+                            rank
+                        )
+
+                        outputs = self.model(
+                            batch_x,
+                            batch_x_mark,
+                            dec_inp,
+                            batch_y_mark
+                        )
+
+                        if self.args.output_attention:
+                            outputs = outputs[0]
+
+                        f_dim = (
+                            -1
+                            if self.args.features == 'MS'
+                            else 0
+                        )
+
+                        outputs = outputs[
+                            :,
+                            -self.args.pred_len:,
+                            f_dim:
+                        ]
+
+                        true = batch_y[
+                            :,
+                            -self.args.pred_len:,
+                            f_dim:
+                        ]
+
+                        batch_mse = torch.mean(
+                            (outputs - true) ** 2
+                        )
+
+                        batch_mae = torch.mean(
+                            torch.abs(outputs - true)
+                        )
+
+                        mse_values[rank].append(
+                            float(
+                                batch_mse.item()
+                            )
+                        )
+
+                        mae_values[rank].append(
+                            float(
+                                batch_mae.item()
+                            )
+                        )
+
+                    print(
+                        'Ablation batch '
+                        f'{batch_idx + 1}/{max_batches} completed.'
+                    )
+
+        finally:
+
+            model.set_rank_ablation(0)
+            model.eval()
+
+        # -------------------------------------------------------------
+        # Aggregate
+        # -------------------------------------------------------------
+
+        rows = []
+
+        full_mse = float(
+            np.mean(
+                mse_values[0]
+            )
+        )
+
+        full_mae = float(
+            np.mean(
+                mae_values[0]
+            )
+        )
+
+        for rank in rank_values:
+
+            mse = float(
+                np.mean(
+                    mse_values[rank]
+                )
+            )
+
+            mae = float(
+                np.mean(
+                    mae_values[rank]
+                )
+            )
+
+            mse_gap = (
+                100.0
+                * (mse - full_mse)
+                / max(abs(full_mse), 1e-12)
+            )
+
+            mae_gap = (
+                100.0
+                * (mae - full_mae)
+                / max(abs(full_mae), 1e-12)
+            )
+
+            row = {
+                'rank': rank,
+                'mse': mse,
+                'mae': mae,
+                'mse_gap_percent_vs_full': mse_gap,
+                'mae_gap_percent_vs_full': mae_gap,
+                'num_batches': len(
+                    mse_values[rank]
+                )
+            }
+
+            rows.append(row)
+
+            print(
+                f'Rank {rank:>3}: '
+                f'MSE={mse:.8f}, '
+                f'MAE={mae:.8f}, '
+                f'MSE gap={mse_gap:+.3f}%'
+            )
+
+        # -------------------------------------------------------------
+        # Automatic screening
+        # -------------------------------------------------------------
+
+        non_full_rows = [
+            row
+            for row in rows
+            if row['rank'] != 0
+        ]
+
+        within_1_percent = [
+            row['rank']
+            for row in non_full_rows
+            if abs(
+                row['mse_gap_percent_vs_full']
+            ) <= 1.0
+        ]
+
+        within_3_percent = [
+            row['rank']
+            for row in non_full_rows
+            if abs(
+                row['mse_gap_percent_vs_full']
+            ) <= 3.0
+        ]
+
+        if within_1_percent:
+
+            screen = 'STRONG_FUNCTIONAL_LOW_RANK_EVIDENCE'
+
+        elif within_3_percent:
+
+            screen = 'PROMISING_BUT_REQUIRES_FURTHER_VALIDATION'
+
+        else:
+
+            screen = 'WEAK_FUNCTIONAL_LOW_RANK_EVIDENCE'
+
+        # -------------------------------------------------------------
+        # Save CSV
+        # -------------------------------------------------------------
+
+        save_dir = './rank_diagnostic'
+
+        os.makedirs(
+            save_dir,
+            exist_ok=True
+        )
+
+        suffix = (
+            f'_ablation_b{max_batches}'
+        )
+
+        csv_path = os.path.join(
+            save_dir,
+            f'{self.args.data}_{flag}{suffix}.csv'
+        )
+
+        fieldnames = [
+            'rank',
+            'mse',
+            'mae',
+            'mse_gap_percent_vs_full',
+            'mae_gap_percent_vs_full',
+            'num_batches'
+        ]
+
+        with open(
+                csv_path,
+                'w',
+                newline=''
+        ) as f:
+
+            writer = csv.DictWriter(
+                f,
+                fieldnames=fieldnames
+            )
+
+            writer.writeheader()
+            writer.writerows(rows)
+
+        # -------------------------------------------------------------
+        # Save JSON
+        # -------------------------------------------------------------
+
+        meta_path = os.path.join(
+            save_dir,
+            f'{self.args.data}_{flag}{suffix}.json'
+        )
+
+        meta = {
+            'dataset': self.args.data,
+            'split': flag,
+            'batches': max_batches,
+            'ranks': rank_values,
+            'full_mse': full_mse,
+            'full_mae': full_mae,
+            'within_1_percent_ranks': within_1_percent,
+            'within_3_percent_ranks': within_3_percent,
+            'screen': screen
+        }
+
+        with open(
+                meta_path,
+                'w'
+        ) as f:
+
+            json.dump(
+                meta,
+                f,
+                indent=2
+            )
+
+        # -------------------------------------------------------------
+        # Save decision
+        # -------------------------------------------------------------
+
+        decision_path = os.path.join(
+            save_dir,
+            f'{self.args.data}_{flag}{suffix}_DECISION.txt'
+        )
+
+        with open(
+                decision_path,
+                'w'
+        ) as f:
+
+            f.write(
+                'FUNCTIONAL RANK ABLATION\n'
+            )
+
+            f.write(
+                '=======================\n\n'
+            )
+
+            f.write(
+                f'Full-attention subset MSE: '
+                f'{full_mse}\n'
+            )
+
+            f.write(
+                f'Full-attention subset MAE: '
+                f'{full_mae}\n\n'
+            )
+
+            f.write(
+                f'Ranks within 1% MSE: '
+                f'{within_1_percent}\n'
+            )
+
+            f.write(
+                f'Ranks within 3% MSE: '
+                f'{within_3_percent}\n\n'
+            )
+
+            f.write(
+                f'Screen: {screen}\n'
+            )
+
+            f.write(
+                '\nNOTE: This is a functional ablation. '
+                'It does not measure speed because full '
+                'attention and SVD are still computed.\n'
+            )
+
+        print('\n' + '=' * 90)
+        print('RANK ABLATION SUMMARY')
+        print('=' * 90)
+        print(
+            f'Full subset MSE: {full_mse:.8f}'
+        )
+        print(
+            f'Full subset MAE: {full_mae:.8f}'
+        )
+        print(
+            f'Ranks within 1%: {within_1_percent}'
+        )
+        print(
+            f'Ranks within 3%: {within_3_percent}'
+        )
+        print(
+            f'Screen: {screen}'
+        )
+        print('=' * 90)
+
+        print(
+            'Saved:'
+        )
+        print(csv_path)
+        print(meta_path)
+        print(decision_path)

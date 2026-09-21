@@ -67,6 +67,19 @@ class Model(nn.Module):
             if hasattr(inner_attention, 'capture_attention'):
                 inner_attention.capture_attention = enabled
 
+    def set_rank_ablation(self, rank=0):
+        """
+        Set the attention rank used for functional ablation.
+
+        rank=0 means full attention.
+        rank>0 means truncated SVD attention.
+        """
+        for encoder_layer in self.encoder.attn_layers:
+            inner_attention = encoder_layer.attention.inner_attention
+
+            if hasattr(inner_attention, 'rank_ablation'):
+                inner_attention.rank_ablation = rank
+
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         if self.use_norm:
             # Normalization from Non-stationary Transformer
