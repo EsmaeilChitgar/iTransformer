@@ -28,7 +28,7 @@ if __name__ == '__main__':
     parser.add_argument('--target', type=str, default='OT', help='target feature in S or MS task')
     parser.add_argument('--freq', type=str, default='h',
                         help='freq for time features encoding, options:[s:secondly, t:minutely, h:hourly, d:daily, b:business days, w:weekly, m:monthly], you can also use more detailed freq like 15min or 3h')
-    parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='location of model checkpoints')
+    parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='location of the data file')
 
     # forecasting task
     parser.add_argument('--seq_len', type=int, default=96, help='input sequence length')
@@ -60,7 +60,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=10, help='data loader num workers')
     parser.add_argument('--itr', type=int, default=1, help='experiments times')
     parser.add_argument('--train_epochs', type=int, default=10, help='train epochs')
-    parser.add_argument('--batch_size', type=int, default=32, help='batch size of train input data')
+    parser.add_argument('--batch_size', type=int, default=32, help='input data batch size')
     parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='optimizer learning rate')
     parser.add_argument('--des', type=str, default='test', help='exp description')
@@ -80,7 +80,7 @@ if __name__ == '__main__':
     parser.add_argument('--channel_independence', type=bool, default=False, help='whether to use channel_independence mechanism')
     parser.add_argument('--inverse', action='store_true', help='inverse output data', default=False)
     parser.add_argument('--class_strategy', type=str, default='projection', help='projection/average/cls_token')
-    parser.add_argument('--target_root_path', type=str, default='./data/electricity/', help='root path of the data file')
+    parser.add_argument('--target_root_path', type=str, default='./data/electricity/', help='root path of the target data file')
     parser.add_argument('--target_data_path', type=str, default='electricity.csv', help='data file')
     parser.add_argument('--efficient_training', type=bool, default=False, help='whether to use efficient_training (exp_name should be partial train)') # See Figure 8 of our paper for the detail
     parser.add_argument('--use_norm', type=int, default=True, help='use norm and denorm')
@@ -99,9 +99,6 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    if args.rank_diagnostic:
-        args.output_attention = True
-
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
 
     if args.use_gpu and args.use_multi_gpu:
@@ -118,18 +115,7 @@ if __name__ == '__main__':
     else: # MTSF: multivariate time series forecasting
         Exp = Exp_Long_Term_Forecast
 
-    if args.rank_diagnostic:
-
-        exp = Exp(args)
-
-        print('>>>>>>> running rank diagnostic >>>>>>>>>>>>>>>>>>>>>>>>>>')
-        exp.rank_diagnostic(args.rank_diagnostic_split)
-
-        print('>>>>>>> rank diagnostic finished >>>>>>>>>>>>>>>>>>>>>>>>>')
-
-        torch.cuda.empty_cache()
-
-    elif args.is_training:
+    if args.is_training:
         for ii in range(args.itr):
             # setting record of experiments
             setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(

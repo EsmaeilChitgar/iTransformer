@@ -1,33 +1,26 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-cd /d "%~dp0"
 
 set CUDA_VISIBLE_DEVICES=0
 
-echo.
 echo ==========================================================
-echo iTransformer Traffic - Rank Diagnostic Experiment
+echo iTransformer Traffic - Train + Rank Diagnostic
 echo ==========================================================
 echo Working directory:
 cd
 echo ==========================================================
-echo.
-
-:: ==========================================================
-:: Experiment 1
-:: Train vanilla iTransformer + diagnostic trained model
-:: ==========================================================
 
 set "START_TIME=%TIME%"
 
+echo.
 echo ==========================================
 echo Experiment 1
 echo Traffic 96 -> 96
-echo Vanilla iTransformer + Rank Diagnostic
+echo C = 862
+echo ==========================================
 echo Start Time: !START_TIME!
 echo ==========================================
-echo.
 
 python -u run.py ^
   --is_training 1 ^
@@ -38,7 +31,6 @@ python -u run.py ^
   --data_path traffic.csv ^
   --features M ^
   --target OT ^
-  --freq h ^
   --seq_len 96 ^
   --label_len 48 ^
   --pred_len 96 ^
@@ -57,12 +49,7 @@ python -u run.py ^
   --batch_size 16 ^
   --learning_rate 0.001 ^
   --train_epochs 10 ^
-  --patience 3 ^
   --num_workers 1 ^
-  --itr 1 ^
-  --des rank_diag ^
-  --exp_name MTSF ^
-  --use_norm 1 ^
   --rank_diagnostic ^
   --rank_diagnostic_split val ^
   --rank_diagnostic_batches 4 ^
@@ -73,7 +60,6 @@ if errorlevel 1 (
     echo ==========================================================
     echo EXPERIMENT FAILED
     echo ==========================================================
-    echo Check the Python error above.
     pause
     exit /b 1
 )
@@ -82,35 +68,28 @@ set "END_TIME=%TIME%"
 
 echo.
 echo ==========================================
-echo Experiment 1 completed.
+echo Experiment completed.
 echo End Time: !END_TIME!
 echo ==========================================
 
 call :CalculateDuration "!START_TIME!" "!END_TIME!" DURATION
 
 echo Duration: !DURATION!
+
 echo.
-
-:: ==========================================================
-:: Show diagnostic decision automatically
-:: ==========================================================
-
-set "DECISION_FILE=rank_diagnostic\custom_val_DECISION.txt"
-
 echo ==========================================
-echo AUTOMATIC DIAGNOSTIC RESULT
+echo Rank Diagnostic Result
 echo ==========================================
 
-if exist "!DECISION_FILE!" (
-    type "!DECISION_FILE!"
+if exist "rank_diagnostic\custom_val_DECISION.txt" (
+    type "rank_diagnostic\custom_val_DECISION.txt"
 ) else (
-    echo Decision file not found:
-    echo !DECISION_FILE!
+    echo Diagnostic result file not found.
 )
 
 echo.
 echo ==========================================
-echo Important output files
+echo Output files
 echo ==========================================
 
 echo rank_diagnostic\custom_val_DECISION.txt
@@ -127,10 +106,6 @@ echo ==========================================
 pause
 exit /b 0
 
-
-:: ==========================================================
-:: Calculate duration
-:: ==========================================================
 
 :CalculateDuration
 

@@ -26,6 +26,7 @@ class Model(nn.Module):
         # Runtime-only diagnostic mode.
         # This stays OFF during normal training/testing.
         self.diagnostic_active = False
+        self.diagnostic_samples = getattr(configs, 'rank_diagnostic_samples', 1)
         self.last_layer_outputs = []
         self.last_attentions = []
 
@@ -38,10 +39,7 @@ class Model(nn.Module):
                             False,
                             configs.factor,
                             attention_dropout=configs.dropout,
-                            output_attention=(
-                                    configs.output_attention or
-                                    getattr(configs, 'rank_diagnostic', False)
-                            )
+                            output_attention=configs.output_attention
                         ), configs.d_model, configs.n_heads),
                     configs.d_model,
                     configs.d_ff,
@@ -74,9 +72,7 @@ class Model(nn.Module):
             # Normalization from Non-stationary Transformer
             means = x_enc.mean(1, keepdim=True).detach()
             x_enc = x_enc - means
-            stdev = torch.sqrt(
-                torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5
-            )
+            stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
             x_enc /= stdev
 
         _, _, N = x_enc.shape
@@ -102,17 +98,21 @@ class Model(nn.Module):
                     attn_mask=None
                 )
 
-                # Keep only CPU copies needed by the diagnostic.
-                # The number of samples is controlled externally.
+                # Keep only the requested number of samples.
+                samples = min(
+                    self.diagnostic_samples,
+                    enc_out.shape[0]
+                )
+
                 self.last_layer_outputs.append(
-                    enc_out.detach().cpu()
+                    enc_out[:samples].detach().cpu()
                 )
 
                 if attn is None:
                     self.last_attentions.append(None)
                 else:
                     self.last_attentions.append(
-                        attn.detach().cpu()
+                        attn[:samples].detach().cpu()
                     )
 
             if self.encoder.norm is not None:
@@ -125,23 +125,18 @@ class Model(nn.Module):
 
         if self.use_norm:
             dec_out = dec_out * (
-                stdev[:, 0, :].unsqueeze(1).repeat(
-                    1, self.pred_len, 1
-                )
+                stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
             )
 
             dec_out = dec_out + (
-                means[:, 0, :].unsqueeze(1).repeat(
-                    1, self.pred_len, 1
-                )
+                means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1)
             )
 
         return dec_out, attns
 
-
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         dec_out, attns = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
-        
+
         if self.output_attention:
             return dec_out[:, -self.pred_len:, :], attns
         else:
