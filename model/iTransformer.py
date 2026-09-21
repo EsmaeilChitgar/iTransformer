@@ -22,13 +22,27 @@ class Model(nn.Module):
         self.enc_embedding = DataEmbedding_inverted(configs.seq_len, configs.d_model, configs.embed, configs.freq,
                                                     configs.dropout)
         self.class_strategy = configs.class_strategy
+
+        # Runtime-only diagnostic mode.
+        # This stays OFF during normal training/testing.
+        self.diagnostic_active = False
+        self.last_layer_outputs = []
+        self.last_attentions = []
+
         # Encoder-only architecture
         self.encoder = Encoder(
             [
                 EncoderLayer(
                     AttentionLayer(
-                        FullAttention(False, configs.factor, attention_dropout=configs.dropout,
-                                      output_attention=configs.output_attention), configs.d_model, configs.n_heads),
+                        FullAttention(
+                            False,
+                            configs.factor,
+                            attention_dropout=configs.dropout,
+                            output_attention=(
+                                    configs.output_attention or
+                                    getattr(configs, 'rank_diagnostic', False)
+                            )
+                        ), configs.d_model, configs.n_heads),
                     configs.d_model,
                     configs.d_ff,
                     dropout=configs.dropout,
@@ -39,34 +53,88 @@ class Model(nn.Module):
         )
         self.projector = nn.Linear(configs.d_model, configs.pred_len, bias=True)
 
+    def set_diagnostic_mode(self, enabled=True):
+        """
+        Enable/disable runtime diagnostic capture.
+
+        This does not change the mathematical model during normal
+        training. Attention matrices are captured only while this
+        mode is active.
+        """
+        self.diagnostic_active = enabled
+
+        for encoder_layer in self.encoder.attn_layers:
+            inner_attention = encoder_layer.attention.inner_attention
+
+            if hasattr(inner_attention, 'capture_attention'):
+                inner_attention.capture_attention = enabled
+
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         if self.use_norm:
             # Normalization from Non-stationary Transformer
             means = x_enc.mean(1, keepdim=True).detach()
             x_enc = x_enc - means
-            stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+            stdev = torch.sqrt(
+                torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5
+            )
             x_enc /= stdev
 
-        _, _, N = x_enc.shape # B L N
-        # B: batch_size;    E: d_model; 
-        # L: seq_len;       S: pred_len;
-        # N: number of variate (tokens), can also includes covariates
+        _, _, N = x_enc.shape
 
-        # Embedding
-        # B L N -> B N E                (B L N -> B L E in the vanilla Transformer)
-        enc_out = self.enc_embedding(x_enc, x_mark_enc) # covariates (e.g timestamp) can be also embedded as tokens
-        
-        # B N E -> B N E                (B L E -> B L E in the vanilla Transformer)
-        # the dimensions of embedded time series has been inverted, and then processed by native attn, layernorm and ffn modules
-        enc_out, attns = self.encoder(enc_out, attn_mask=None)
+        # B L N -> B N E
+        enc_out = self.enc_embedding(x_enc, x_mark_enc)
 
-        # B N E -> B N S -> B S N 
-        dec_out = self.projector(enc_out).permute(0, 2, 1)[:, :, :N] # filter the covariates
+        if not self.diagnostic_active:
+            # Keep the original execution path completely unchanged.
+            enc_out, attns = self.encoder(enc_out, attn_mask=None)
+
+        else:
+            # ---------------------------------------------------------
+            # Diagnostic execution
+            # ---------------------------------------------------------
+            self.last_layer_outputs = []
+            self.last_attentions = []
+
+            for encoder_layer in self.encoder.attn_layers:
+
+                enc_out, attn = encoder_layer(
+                    enc_out,
+                    attn_mask=None
+                )
+
+                # Keep only CPU copies needed by the diagnostic.
+                # The number of samples is controlled externally.
+                self.last_layer_outputs.append(
+                    enc_out.detach().cpu()
+                )
+
+                if attn is None:
+                    self.last_attentions.append(None)
+                else:
+                    self.last_attentions.append(
+                        attn.detach().cpu()
+                    )
+
+            if self.encoder.norm is not None:
+                enc_out = self.encoder.norm(enc_out)
+
+            attns = self.last_attentions
+
+        # B N E -> B N S -> B S N
+        dec_out = self.projector(enc_out).permute(0, 2, 1)[:, :, :N]
 
         if self.use_norm:
-            # De-Normalization from Non-stationary Transformer
-            dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
-            dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+            dec_out = dec_out * (
+                stdev[:, 0, :].unsqueeze(1).repeat(
+                    1, self.pred_len, 1
+                )
+            )
+
+            dec_out = dec_out + (
+                means[:, 0, :].unsqueeze(1).repeat(
+                    1, self.pred_len, 1
+                )
+            )
 
         return dec_out, attns
 

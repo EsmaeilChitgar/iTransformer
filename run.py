@@ -86,8 +86,22 @@ if __name__ == '__main__':
     parser.add_argument('--use_norm', type=int, default=True, help='use norm and denorm')
     parser.add_argument('--partial_start_index', type=int, default=0, help='the start index of variates for partial training, '
                                                                            'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
+    # Rank diagnostic
+    parser.add_argument('--rank_diagnostic', action='store_true',
+                        help='run rank/spectral diagnostics on the trained best checkpoint')
+    parser.add_argument('--rank_diagnostic_split', type=str, default='val',
+                        choices=['train', 'val', 'test'],
+                        help='split used for rank diagnostic')
+    parser.add_argument('--rank_diagnostic_batches', type=int, default=4,
+                        help='number of batches used for rank diagnostic')
+    parser.add_argument('--rank_diagnostic_samples', type=int, default=1,
+                        help='number of samples per batch analyzed for rank diagnostic')
 
     args = parser.parse_args()
+
+    if args.rank_diagnostic:
+        args.output_attention = True
+
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
 
     if args.use_gpu and args.use_multi_gpu:
@@ -104,8 +118,18 @@ if __name__ == '__main__':
     else: # MTSF: multivariate time series forecasting
         Exp = Exp_Long_Term_Forecast
 
+    if args.rank_diagnostic:
 
-    if args.is_training:
+        exp = Exp(args)
+
+        print('>>>>>>> running rank diagnostic >>>>>>>>>>>>>>>>>>>>>>>>>>')
+        exp.rank_diagnostic(args.rank_diagnostic_split)
+
+        print('>>>>>>> rank diagnostic finished >>>>>>>>>>>>>>>>>>>>>>>>>')
+
+        torch.cuda.empty_cache()
+
+    elif args.is_training:
         for ii in range(args.itr):
             # setting record of experiments
             setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
@@ -128,8 +152,20 @@ if __name__ == '__main__':
                 args.class_strategy, ii)
 
             exp = Exp(args)  # set experiments
+
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             exp.train(setting)
+
+            if args.rank_diagnostic:
+                print('>>>>>>>start rank diagnostic : {}>>>>>>>>>>>>>>>>>>>>'.format(
+                    args.rank_diagnostic_split
+                ))
+                exp.rank_diagnostic(
+                    flag=args.rank_diagnostic_split,
+                    max_batches=args.rank_diagnostic_batches,
+                    max_samples=args.rank_diagnostic_samples
+                )
+                print('>>>>>>>rank diagnostic finished <<<<<<<<<<<<<<<<<<<<<<')
 
             print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
             exp.test(setting)

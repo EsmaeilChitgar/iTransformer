@@ -138,27 +138,60 @@ class FullAttention(nn.Module):
         self.mask_flag = mask_flag
         self.output_attention = output_attention
         self.dropout = nn.Dropout(attention_dropout)
+        # Runtime-only capture flag.
+        # False during all normal training/testing.
+        self.capture_attention = False
 
-    def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
+    def forward(self, queries, keys, values, attn_mask,
+                tau=None, delta=None):
+
         B, L, H, E = queries.shape
         _, S, _, D = values.shape
+
         scale = self.scale or 1. / sqrt(E)
 
-        scores = torch.einsum("blhe,bshe->bhls", queries, keys)
+        scores = torch.einsum(
+            "blhe,bshe->bhls",
+            queries,
+            keys
+        )
 
         if self.mask_flag:
             if attn_mask is None:
-                attn_mask = TriangularCausalMask(B, L, device=queries.device)
+                attn_mask = TriangularCausalMask(
+                    B,
+                    L,
+                    device=queries.device
+                )
 
-            scores.masked_fill_(attn_mask.mask, -np.inf)
+            scores.masked_fill_(
+                attn_mask.mask,
+                -np.inf
+            )
 
-        A = self.dropout(torch.softmax(scale * scores, dim=-1))
-        V = torch.einsum("bhls,bshd->blhd", A, values)
+        # IMPORTANT:
+        # Keep the raw attention matrix for diagnostics.
+        A_raw = torch.softmax(
+            scale * scores,
+            dim=-1
+        )
 
-        if self.output_attention:
-            return (V.contiguous(), A)
-        else:
-            return (V.contiguous(), None)
+        A = self.dropout(A_raw)
+
+        V = torch.einsum(
+            "bhls,bshd->blhd",
+            A,
+            values
+        )
+
+        # During normal training, nothing is returned and the
+        # attention matrix can be released immediately.
+        #
+        # During diagnostic mode, return RAW attention before dropout.
+        if self.output_attention or self.capture_attention:
+            return V.contiguous(), A_raw.contiguous()
+
+        return V.contiguous(), None
 
 
 # Code implementation from https://github.com/zhouhaoyi/Informer2020

@@ -9,6 +9,10 @@ import os
 import time
 import warnings
 import numpy as np
+import csv
+import json
+import math
+from collections import defaultdict
 
 warnings.filterwarnings('ignore')
 
@@ -276,7 +280,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         return
 
-
     def predict(self, setting, load=False):
         pred_data, pred_loader = self._get_data(flag='pred')
 
@@ -327,3 +330,705 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         np.save(folder_path + 'real_prediction.npy', preds)
 
         return
+
+    def rank_diagnostic(
+            self,
+            flag='val',
+            max_batches=4,
+            max_samples=1
+    ):
+        """
+        Analyze the learned representation and attention spectra of the
+        trained iTransformer checkpoint.
+
+        This is a diagnostic experiment only.
+        It does NOT modify model weights.
+        """
+
+        print('\n' + '=' * 90)
+        print('RANK / SPECTRAL DIAGNOSTIC')
+        print('=' * 90)
+        print('Split:', flag)
+        print('Max batches:', max_batches)
+        print('Max samples per batch:', max_samples)
+
+        data_set, data_loader = self._get_data(flag=flag)
+
+        model = self.model.module if hasattr(
+            self.model, 'module'
+        ) else self.model
+
+        model.eval()
+        model.set_diagnostic_mode(True)
+
+        # -------------------------------------------------------------
+        # Helpers
+        # -------------------------------------------------------------
+
+        def rank_from_energy(cumulative_energy, threshold):
+            idx = torch.nonzero(
+                cumulative_energy >= threshold,
+                as_tuple=False
+            )
+
+            if idx.numel() == 0:
+                return int(cumulative_energy.numel())
+
+            return int(idx[0].item() + 1)
+
+        def matrix_stats(matrix, topk_values=(8, 32, 64, 128)):
+            """
+            matrix: [M, N]
+
+            Returns singular-spectrum and concentration statistics.
+            """
+
+            matrix = matrix.float()
+
+            singular_values = torch.linalg.svdvals(
+                matrix
+            )
+
+            energy = singular_values.square()
+
+            total_energy = energy.sum().clamp_min(1e-12)
+
+            normalized_energy = (
+                energy / total_energy
+            )
+
+            cumulative_energy = torch.cumsum(
+                normalized_energy,
+                dim=0
+            )
+
+            r90 = rank_from_energy(
+                cumulative_energy,
+                0.90
+            )
+
+            r95 = rank_from_energy(
+                cumulative_energy,
+                0.95
+            )
+
+            r99 = rank_from_energy(
+                cumulative_energy,
+                0.99
+            )
+
+            # Stable rank:
+            # ||A||_F^2 / ||A||_2^2
+            stable_rank = (
+                energy.sum()
+                / singular_values[0].square().clamp_min(1e-12)
+            )
+
+            # Entropy-based effective rank.
+            p = singular_values / (
+                singular_values.sum().clamp_min(1e-12)
+            )
+
+            entropy = -(
+                p.clamp_min(1e-12)
+                * p.clamp_min(1e-12).log()
+            ).sum()
+
+            effective_rank = torch.exp(entropy)
+
+            result = {
+                'singular_values': singular_values.numpy(),
+                'r90': r90,
+                'r95': r95,
+                'r99': r99,
+                'stable_rank': float(stable_rank.item()),
+                'effective_rank': float(
+                    effective_rank.item()
+                )
+            }
+
+            for k in topk_values:
+
+                if k <= matrix.shape[-1]:
+                    result[
+                        f'energy_r{k}'
+                    ] = float(
+                        cumulative_energy[k - 1].item()
+                    )
+
+            return result
+
+        def attention_stats(A):
+            """
+            A: [N, N]
+
+            Attention is row-normalized.
+            """
+
+            stats = matrix_stats(A)
+
+            N = A.shape[-1]
+
+            A_safe = A.clamp_min(1e-12)
+
+            row_entropy = -(
+                A_safe * A_safe.log()
+            ).sum(dim=-1).mean()
+
+            normalized_entropy = (
+                row_entropy / math.log(N)
+            )
+
+            stats['normalized_attention_entropy'] = float(
+                normalized_entropy.item()
+            )
+
+            for k in [8, 32, 64, 128]:
+
+                if k <= N:
+
+                    top_mass = torch.topk(
+                        A,
+                        k=k,
+                        dim=-1
+                    ).values.sum(dim=-1).mean()
+
+                    stats[
+                        f'top{k}_mass'
+                    ] = float(top_mass.item())
+
+            return stats
+
+        # -------------------------------------------------------------
+        # Storage
+        # -------------------------------------------------------------
+
+        representation_rows = []
+        attention_rows = []
+
+        spectra = {}
+
+        batches_processed = 0
+
+        # -------------------------------------------------------------
+        # Diagnostic forward passes
+        # -------------------------------------------------------------
+
+        try:
+
+            with torch.no_grad():
+
+                for batch_idx, (
+                        batch_x,
+                        batch_y,
+                        batch_x_mark,
+                        batch_y_mark
+                ) in enumerate(data_loader):
+
+                    if batch_idx >= max_batches:
+                        break
+
+                    batch_x = batch_x.float().to(
+                        self.device
+                    )
+
+                    batch_y = batch_y.float().to(
+                        self.device
+                    )
+
+                    if (
+                            'PEMS' in self.args.data
+                            or 'Solar' in self.args.data
+                    ):
+                        batch_x_mark = None
+                        batch_y_mark = None
+                    else:
+                        batch_x_mark = (
+                            batch_x_mark
+                            .float()
+                            .to(self.device)
+                        )
+
+                        batch_y_mark = (
+                            batch_y_mark
+                            .float()
+                            .to(self.device)
+                        )
+
+                    dec_inp = torch.zeros_like(
+                        batch_y[
+                            :,
+                            -self.args.pred_len:,
+                            :
+                        ]
+                    ).float()
+
+                    dec_inp = torch.cat(
+                        [
+                            batch_y[
+                                :,
+                                :self.args.label_len,
+                                :
+                            ],
+                            dec_inp
+                        ],
+                        dim=1
+                    ).float().to(self.device)
+
+                    # Forward pass.
+                    self.model(
+                        batch_x,
+                        batch_x_mark,
+                        dec_inp,
+                        batch_y_mark
+                    )
+
+                    layer_outputs = model.last_layer_outputs
+                    attentions = model.last_attentions
+
+                    current_samples = min(
+                        max_samples,
+                        batch_x.shape[0]
+                    )
+
+                    for layer_idx in range(
+                        len(layer_outputs)
+                    ):
+
+                        E_batch = layer_outputs[
+                            layer_idx
+                        ][:current_samples]
+
+                        A_batch = attentions[
+                            layer_idx
+                        ]
+
+                        # -------------------------------------------------
+                        # Representation analysis
+                        # -------------------------------------------------
+
+                        for sample_idx in range(
+                            current_samples
+                        ):
+
+                            E = E_batch[
+                                sample_idx
+                            ]
+
+                            E_stats = matrix_stats(
+                                E
+                            )
+
+                            E_stats[
+                                'layer'
+                            ] = layer_idx + 1
+
+                            E_stats[
+                                'sample'
+                            ] = sample_idx
+
+                            E_stats[
+                                'batch'
+                            ] = batch_idx
+
+                            representation_rows.append(
+                                E_stats
+                            )
+
+                            spectra[
+                                f'E_L{layer_idx + 1}_B{batch_idx}_S{sample_idx}'
+                            ] = E_stats[
+                                'singular_values'
+                            ]
+
+                        # -------------------------------------------------
+                        # Attention analysis
+                        # -------------------------------------------------
+
+                        if A_batch is None:
+                            continue
+
+                        A_batch = A_batch[
+                            :current_samples
+                        ]
+
+                        # A_batch:
+                        # [samples, heads, N, N]
+
+                        for sample_idx in range(
+                            current_samples
+                        ):
+
+                            A_sample = A_batch[
+                                sample_idx
+                            ]
+
+                            for head_idx in range(
+                                A_sample.shape[0]
+                            ):
+
+                                A = A_sample[
+                                    head_idx
+                                ]
+
+                                A_stats = attention_stats(
+                                    A
+                                )
+
+                                A_stats[
+                                    'layer'
+                                ] = layer_idx + 1
+
+                                A_stats[
+                                    'head'
+                                ] = head_idx + 1
+
+                                A_stats[
+                                    'sample'
+                                ] = sample_idx
+
+                                A_stats[
+                                    'batch'
+                                ] = batch_idx
+
+                                attention_rows.append(
+                                    A_stats
+                                )
+
+                                spectra[
+                                    f'A_L{layer_idx + 1}_H{head_idx + 1}_B{batch_idx}_S{sample_idx}'
+                                ] = A_stats[
+                                    'singular_values'
+                                ]
+
+                    batches_processed += 1
+
+                    print(
+                        f'Diagnostic batch '
+                        f'{batches_processed}/{max_batches} completed.'
+                    )
+
+        finally:
+            model.set_diagnostic_mode(False)
+            model.eval()
+
+        # -------------------------------------------------------------
+        # Aggregate summaries
+        # -------------------------------------------------------------
+
+        def aggregate(rows, include_head=False):
+
+            groups = defaultdict(list)
+
+            for row in rows:
+
+                if include_head:
+                    key = (
+                        row['layer'],
+                        row['head']
+                    )
+                else:
+                    key = (
+                        row['layer'],
+                    )
+
+                groups[key].append(row)
+
+            summary = []
+
+            for key, group in sorted(
+                    groups.items()
+            ):
+
+                row = {
+                    'layer': key[0],
+                    'num_observations': len(group)
+                }
+
+                if include_head:
+                    row['head'] = key[1]
+
+                numeric_keys = [
+                    k
+                    for k in group[0].keys()
+                    if k not in {
+                        'singular_values',
+                        'layer',
+                        'head',
+                        'sample',
+                        'batch'
+                    }
+                ]
+
+                for metric_name in numeric_keys:
+                    row[metric_name] = float(
+                        np.mean(
+                            [
+                                item[metric_name]
+                                for item in group
+                            ]
+                        )
+                    )
+
+                summary.append(row)
+
+            return summary
+
+        representation_summary = aggregate(
+            representation_rows,
+            include_head=False
+        )
+
+        attention_summary = aggregate(
+            attention_rows,
+            include_head=True
+        )
+
+        # -------------------------------------------------------------
+        # Decision screen
+        # -------------------------------------------------------------
+
+        attention_r95_ratios = []
+
+        for row in attention_summary:
+            attention_r95_ratios.append(
+                row['r95'] / float(
+                    self.args.enc_in
+                )
+            )
+
+        if attention_r95_ratios:
+
+            median_r95_ratio = float(
+                np.median(
+                    attention_r95_ratios
+                )
+            )
+
+            min_r95_ratio = float(
+                np.min(
+                    attention_r95_ratios
+                )
+            )
+
+            max_r95_ratio = float(np.max(attention_r95_ratios))
+
+            if median_r95_ratio <= 0.20:
+                rank_screen = 'LOW_RANK_SCREEN'
+
+            elif median_r95_ratio >= 0.80:
+                rank_screen = 'HIGH_RANK_SCREEN'
+
+            else:
+                rank_screen = 'INTERMEDIATE_RANK_SCREEN'
+
+            if (
+                    min_r95_ratio > 0
+                    and max_r95_ratio / min_r95_ratio >= 2.0
+            ):
+                heterogeneity_screen = 'HIGH_HEAD_LAYER_HETEROGENEITY'
+
+            else:
+                heterogeneity_screen = 'NO_STRONG_HEAD_LAYER_HETEROGENEITY'
+        else:
+            median_r95_ratio = None
+            min_r95_ratio = None
+            max_r95_ratio = None
+            rank_screen = 'NO_ATTENTION_DATA'
+            heterogeneity_screen = 'NO_DATA'
+
+        # -------------------------------------------------------------
+        # Save outputs
+        # -------------------------------------------------------------
+
+        save_dir = './rank_diagnostic'
+
+        os.makedirs(
+            save_dir,
+            exist_ok=True
+        )
+
+        # Representation CSV
+        representation_csv = os.path.join(
+            save_dir,
+            f'{self.args.data}_{flag}_representation_summary.csv'
+        )
+
+        if representation_summary:
+
+            fieldnames = list(
+                representation_summary[0].keys()
+            )
+
+            with open(
+                    representation_csv,
+                    'w',
+                    newline=''
+            ) as f:
+
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=fieldnames
+                )
+
+                writer.writeheader()
+                writer.writerows(
+                    representation_summary
+                )
+
+        # Attention CSV
+        attention_csv = os.path.join(
+            save_dir,
+            f'{self.args.data}_{flag}_attention_summary.csv'
+        )
+
+        if attention_summary:
+
+            fieldnames = list(
+                attention_summary[0].keys()
+            )
+
+            with open(
+                    attention_csv,
+                    'w',
+                    newline=''
+            ) as f:
+
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=fieldnames
+                )
+
+                writer.writeheader()
+                writer.writerows(
+                    attention_summary
+                )
+
+        # Raw spectra
+        spectrum_path = os.path.join(
+            save_dir,
+            f'{self.args.data}_{flag}_singular_spectra.npz'
+        )
+
+        np.savez_compressed(
+            spectrum_path,
+            **spectra
+        )
+
+        # Meta JSON
+        meta = {
+            'dataset': self.args.data,
+            'split': flag,
+            'enc_in': self.args.enc_in,
+            'd_model': self.args.d_model,
+            'n_heads': self.args.n_heads,
+            'e_layers': self.args.e_layers,
+            'seq_len': self.args.seq_len,
+            'pred_len': self.args.pred_len,
+            'batches_processed': batches_processed,
+            'samples_per_batch': max_samples,
+            'median_attention_r95_ratio': median_r95_ratio,
+            'min_attention_r95_ratio': min_r95_ratio,
+            'max_attention_r95_ratio': max_r95_ratio,
+            'rank_screen': rank_screen,
+            'heterogeneity_screen': heterogeneity_screen
+        }
+
+        meta_path = os.path.join(
+            save_dir,
+            f'{self.args.data}_{flag}_diagnostic_meta.json'
+        )
+
+        with open(
+                meta_path,
+                'w'
+        ) as f:
+
+            json.dump(
+                meta,
+                f,
+                indent=2
+            )
+
+        # Decision text
+        decision_path = os.path.join(
+            save_dir,
+            f'{self.args.data}_{flag}_DECISION.txt'
+        )
+
+        with open(
+                decision_path,
+                'w'
+        ) as f:
+
+            f.write(
+                'RANK DIAGNOSTIC SCREEN\n'
+            )
+            f.write(
+                '======================\n\n'
+            )
+            f.write(
+                f'Rank screen: {rank_screen}\n'
+            )
+            f.write(
+                f'Heterogeneity screen: '
+                f'{heterogeneity_screen}\n'
+            )
+            f.write(
+                f'Median attention r95/N: '
+                f'{median_r95_ratio}\n'
+            )
+            f.write(
+                f'Min attention r95/N: '
+                f'{min_r95_ratio}\n'
+            )
+            f.write(
+                f'Max attention r95/N: '
+                f'{max_r95_ratio}\n'
+            )
+            f.write(
+                '\nThese are diagnostic screening rules, '
+                'not statistical significance claims.\n'
+            )
+
+        # -------------------------------------------------------------
+        # Console summary
+        # -------------------------------------------------------------
+
+        print('\n' + '=' * 90)
+        print('RANK DIAGNOSTIC SUMMARY')
+        print('=' * 90)
+
+        print(
+            f'Median attention r95/N: '
+            f'{median_r95_ratio}'
+        )
+
+        print(
+            f'Min attention r95/N: '
+            f'{min_r95_ratio}'
+        )
+
+        print(
+            f'Max attention r95/N: '
+            f'{max_r95_ratio}'
+        )
+
+        print(
+            f'Rank screen: {rank_screen}'
+        )
+
+        print(
+            f'Heterogeneity screen: '
+            f'{heterogeneity_screen}'
+        )
+
+        print('\nSaved files:')
+
+        print(representation_csv)
+        print(attention_csv)
+        print(spectrum_path)
+        print(meta_path)
+        print(decision_path)
+
+        print('=' * 90)
