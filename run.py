@@ -87,7 +87,49 @@ if __name__ == '__main__':
     parser.add_argument('--partial_start_index', type=int, default=0, help='the start index of variates for partial training, '
                                                                            'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
 
+    parser.add_argument(
+        '--low_rank_attention',
+        action='store_true',
+        help='use trainable global fixed-rank variate attention'
+    )
+
+    parser.add_argument(
+        '--attn_rank',
+        type=int,
+        default=64,
+        help='global fixed rank for low-rank variate attention'
+    )
+
+    parser.add_argument(
+        '--attn_tokens',
+        type=int,
+        default=0,
+        help='number of tokens entering attention; Traffic hourly M uses 866'
+    )
+    
     args = parser.parse_args()
+
+    if args.low_rank_attention:
+
+        if args.attn_rank <= 0:
+            raise ValueError(
+                f'attn_rank must be > 0. '
+                f'Got {args.attn_rank}'
+            )
+
+        if args.attn_tokens <= 0:
+            raise ValueError(
+                'attn_tokens must be explicitly provided '
+                'when low_rank_attention is enabled.'
+            )
+
+        if args.attn_rank >= args.attn_tokens:
+            raise ValueError(
+                f'attn_rank must be smaller than attn_tokens. '
+                f'Got rank={args.attn_rank}, '
+                f'attn_tokens={args.attn_tokens}'
+            )
+
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
 
     if args.use_gpu and args.use_multi_gpu:

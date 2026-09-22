@@ -160,6 +160,325 @@ class FullAttention(nn.Module):
         else:
             return (V.contiguous(), None)
 
+class LowRankVariateAttention(nn.Module):
+    """
+    Global fixed-rank attention over iTransformer variate tokens.
+
+    Original iTransformer:
+        Q, K, V: [B, N, H, D]
+        attention scores: [B, H, N, N]
+
+    Low-rank version:
+        K -> K_r: [B, H, R, D]
+        V -> V_r: [B, H, R, D]
+
+        attention scores:
+            [B, H, N, R]
+
+    where R << N.
+
+    This is a trainable low-rank token projection and must be
+    trained from scratch. It is not the SVD/oracle ablation.
+
+    IMPORTANT:
+    iTransformer passes attn_mask=None because its encoder
+    attention is non-causal. Length-dimension projection is not
+    compatible with a standard causal mask.
+    """
+
+    def __init__(
+            self,
+            rank,
+            num_tokens,
+            attention_dropout=0.1,
+            output_attention=False
+    ):
+        super(LowRankVariateAttention, self).__init__()
+
+        rank = int(rank)
+        num_tokens = int(num_tokens)
+
+        if rank <= 0:
+            raise ValueError(
+                f'Low-rank attention rank must be > 0. '
+                f'Got: {rank}'
+            )
+
+        if num_tokens <= 0:
+            raise ValueError(
+                f'Number of attention tokens must be > 0. '
+                f'Got: {num_tokens}'
+            )
+
+        if rank >= num_tokens:
+            raise ValueError(
+                f'Low-rank attention requires rank < number '
+                f'of tokens. Got rank={rank}, '
+                f'num_tokens={num_tokens}'
+            )
+
+        self.rank = rank
+        self.num_tokens = num_tokens
+        self.output_attention = output_attention
+
+        self.dropout = nn.Dropout(
+            attention_dropout
+        )
+
+        # ---------------------------------------------------------
+        # Learned token projections
+        #
+        # E_K : [R, N]
+        # E_V : [R, N]
+        #
+        # They are shared across heads inside each attention layer.
+        # Each encoder layer owns its own projection matrices.
+        # ---------------------------------------------------------
+
+        self.key_projection_tokens = nn.Parameter(
+            torch.empty(
+                rank,
+                num_tokens
+            )
+        )
+
+        self.value_projection_tokens = nn.Parameter(
+            torch.empty(
+                rank,
+                num_tokens
+            )
+        )
+
+        # ---------------------------------------------------------
+        # Row-orthogonal initialization.
+        #
+        # This gives each projection a controlled initial scale.
+        # ---------------------------------------------------------
+
+        nn.init.orthogonal_(
+            self.key_projection_tokens
+        )
+
+        nn.init.orthogonal_(
+            self.value_projection_tokens
+        )
+
+    def forward(
+            self,
+            queries,
+            keys,
+            values,
+            attn_mask,
+            tau=None,
+            delta=None
+    ):
+        """
+        queries:
+            [B, Nq, H, D]
+
+        keys:
+            [B, Nk, H, D]
+
+        values:
+            [B, Nk, H, D]
+
+        iTransformer self-attention uses:
+            Nq = Nk = N
+
+        Output:
+            [B, Nq, H, D]
+        """
+
+        B, Nq, H, D = queries.shape
+        Bk, Nk, Hk, Dk = keys.shape
+        Bv, Nv, Hv, Dv = values.shape
+
+        # ---------------------------------------------------------
+        # This implementation is specifically for self-attention.
+        # ---------------------------------------------------------
+
+        if B != Bk or B != Bv:
+            raise ValueError(
+                'Batch dimensions of queries, keys and values '
+                'must match.'
+            )
+
+        if H != Hk or H != Hv:
+            raise ValueError(
+                'Head dimensions of queries, keys and values '
+                'must match.'
+            )
+
+        if D != Dk or D != Dv:
+            raise ValueError(
+                'Feature dimensions of queries, keys and values '
+                'must match.'
+            )
+
+        if Nq != Nk or Nq != Nv:
+            raise ValueError(
+                'LowRankVariateAttention currently supports '
+                'self-attention only. '
+                f'Got Nq={Nq}, Nk={Nk}, Nv={Nv}.'
+            )
+
+        # ---------------------------------------------------------
+        # Very important:
+        # the token count must match the learned projection size.
+        # For the current Traffic experiment:
+        #
+        #     N = 866
+        #
+        #     862 variates
+        #     + 4 hourly time-feature tokens
+        #     = 866
+        # ---------------------------------------------------------
+
+        if Nq != self.num_tokens:
+
+            raise RuntimeError(
+                'Attention token count mismatch in '
+                'LowRankVariateAttention: '
+                f'expected {self.num_tokens}, '
+                f'got {Nq}. '
+                'Check --attn_tokens and the iTransformer '
+                'DataEmbedding_inverted configuration.'
+            )
+
+        # ---------------------------------------------------------
+        # iTransformer uses attn_mask=None for encoder attention.
+        #
+        # A standard causal mask is not meaningful after projecting
+        # the token/length dimension because each projected token
+        # mixes multiple original positions.
+        # ---------------------------------------------------------
+
+        if attn_mask is not None:
+
+            raise ValueError(
+                'LowRankVariateAttention does not support '
+                'attn_mask != None. '
+                'iTransformer encoder attention should pass None.'
+            )
+
+        # ---------------------------------------------------------
+        # [B, N, H, D]
+        #
+        # ->
+        #
+        # [B, H, N, D]
+        # ---------------------------------------------------------
+
+        Q = queries.permute(
+            0, 2, 1, 3
+        )
+
+        K = keys.permute(
+            0, 2, 1, 3
+        )
+
+        V = values.permute(
+            0, 2, 1, 3
+        )
+
+        # ---------------------------------------------------------
+        # Token dimension compression
+        #
+        # E_K @ K:
+        #
+        # [R, N] @ [B, H, N, D]
+        #     ->
+        # [B, H, R, D]
+        #
+        # E_V @ V:
+        #
+        # [R, N] @ [B, H, N, D]
+        #     ->
+        # [B, H, R, D]
+        # ---------------------------------------------------------
+
+        K_r = torch.einsum(
+            'rn,bhnd->bhrd',
+            self.key_projection_tokens,
+            K
+        )
+
+        V_r = torch.einsum(
+            'rn,bhnd->bhrd',
+            self.value_projection_tokens,
+            V
+        )
+
+        # ---------------------------------------------------------
+        # Attention scores
+        #
+        # Full:
+        #     [B, H, N, N]
+        #
+        # Low-rank:
+        #     [B, H, N, R]
+        # ---------------------------------------------------------
+
+        scale = 1.0 / sqrt(D)
+
+        scores = torch.einsum(
+            'bhnd,bhrd->bhnr',
+            Q,
+            K_r
+        )
+
+        scores = scores * scale
+
+        A = torch.softmax(
+            scores,
+            dim=-1
+        )
+
+        A = self.dropout(
+            A
+        )
+
+        # ---------------------------------------------------------
+        # Weighted latent values
+        #
+        # [B, H, N, R]
+        #     @
+        # [B, H, R, D]
+        #
+        # ->
+        #
+        # [B, H, N, D]
+        # ---------------------------------------------------------
+
+        output = torch.einsum(
+            'bhnr,bhrd->bhnd',
+            A,
+            V_r
+        )
+
+        # ---------------------------------------------------------
+        # Back to iTransformer / AttentionLayer layout
+        #
+        # [B, H, N, D]
+        # ->
+        # [B, N, H, D]
+        # ---------------------------------------------------------
+
+        output = output.permute(
+            0, 2, 1, 3
+        ).contiguous()
+
+        if self.output_attention:
+
+            return (
+                output,
+                A.contiguous()
+            )
+
+        return (
+            output,
+            None
+        )
 
 # Code implementation from https://github.com/zhouhaoyi/Informer2020
 class ProbAttention(nn.Module):
@@ -328,4 +647,101 @@ class ReformerLayer(nn.Module):
         B, N, C = queries.shape
         queries = self.attn(self.fit_length(queries))[:, :N, :]
         return queries, None
+
+
+class LowRankAttention(nn.Module):
+
+    def __init__(
+        self,
+        rank,
+        seq_len,
+        attention_dropout=0.1,
+        output_attention=False
+    ):
+        super(LowRankAttention, self).__init__()
+
+        self.rank = rank
+        self.seq_len = seq_len
+        self.output_attention = output_attention
+
+        self.dropout = nn.Dropout(attention_dropout)
+
+        # Learned projection from N variables to R latent tokens.
+        # Shape: [R, N]
+        self.token_projection = nn.Parameter(
+            torch.empty(rank, seq_len)
+        )
+
+        nn.init.xavier_uniform_(self.token_projection)
+
+    def forward(
+        self,
+        queries,
+        keys,
+        values,
+        attn_mask,
+        tau=None,
+        delta=None
+    ):
+
+        B, N, H, D = queries.shape
+
+        Q = queries.permute(0, 2, 1, 3)
+        K = keys.permute(0, 2, 1, 3)
+        V = values.permute(0, 2, 1, 3)
+
+        P = self.token_projection
+
+        # ---------------------------------------------------------
+        # Compress variable dimension:
+        #
+        # N -> R
+        # ---------------------------------------------------------
+
+        K_r = torch.einsum(
+            "rn,bhnd->bhrd",
+            P,
+            K
+        )
+
+        V_r = torch.einsum(
+            "rn,bhnd->bhrd",
+            P,
+            V
+        )
+
+        # ---------------------------------------------------------
+        # N x N attention
+        #
+        # becomes
+        #
+        # N x R attention
+        # ---------------------------------------------------------
+
+        scale = 1.0 / sqrt(D)
+
+        scores = torch.einsum(
+            "bhnd,bhrd->bhnr",
+            Q,
+            K_r
+        ) * scale
+
+        A = torch.softmax(scores, dim=-1)
+
+        A = self.dropout(A)
+
+        output = torch.einsum(
+            "bhnr,bhrd->bhnd",
+            A,
+            V_r
+        )
+
+        output = output.permute(
+            0, 2, 1, 3
+        ).contiguous()
+
+        if self.output_attention:
+            return output, A
+
+        return output, None
 

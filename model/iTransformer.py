@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from layers.Transformer_EncDec import Encoder, EncoderLayer
-from layers.SelfAttention_Family import FullAttention, AttentionLayer
+from layers.SelfAttention_Family import FullAttention, AttentionLayer, LowRankAttention, LowRankVariateAttention
 from layers.Embed import DataEmbedding_inverted
 import numpy as np
 
@@ -27,8 +27,25 @@ class Model(nn.Module):
             [
                 EncoderLayer(
                     AttentionLayer(
-                        FullAttention(False, configs.factor, attention_dropout=configs.dropout,
-                                      output_attention=configs.output_attention), configs.d_model, configs.n_heads),
+                        (
+                            LowRankVariateAttention(
+                                rank=configs.attn_rank,
+                                num_tokens=configs.attn_tokens,
+                                attention_dropout=configs.dropout,
+                                output_attention=configs.output_attention
+                            )
+                            if configs.low_rank_attention
+                            else
+                            FullAttention(
+                                False,
+                                configs.factor,
+                                attention_dropout=configs.dropout,
+                                output_attention=configs.output_attention
+                            )
+                        ),
+                        configs.d_model,
+                        configs.n_heads
+                    ),
                     configs.d_model,
                     configs.d_ff,
                     dropout=configs.dropout,
@@ -37,6 +54,16 @@ class Model(nn.Module):
             ],
             norm_layer=torch.nn.LayerNorm(configs.d_model)
         )
+
+        if configs.low_rank_attention:
+            print(
+                'LOW-RANK VARIATE ATTENTION ENABLED: '
+                f'rank={configs.attn_rank}, '
+                f'attn_tokens={configs.attn_tokens}, '
+                f'n_heads={configs.n_heads}, '
+                f'e_layers={configs.e_layers}'
+            )
+
         self.projector = nn.Linear(configs.d_model, configs.pred_len, bias=True)
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
