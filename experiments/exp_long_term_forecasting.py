@@ -1382,6 +1382,25 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                                 rank
                             )
 
+                        # -------------------------------------------------
+                        # Verify the actual rank configuration.
+                        # This is especially important for layer-wise
+                        # ablation.
+                        # -------------------------------------------------
+
+                        if batch_idx == 0:
+                            applied_ranks = [
+                                int(
+                                    layer.attention.inner_attention.rank_ablation
+                                )
+                                for layer in model.encoder.attn_layers
+                            ]
+
+                            print(
+                                f'Rank {rank} applied ranks: '
+                                f'{applied_ranks}'
+                            )
+
                         outputs = self.model(
                             batch_x,
                             batch_x_mark,
