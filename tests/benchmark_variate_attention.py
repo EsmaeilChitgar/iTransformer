@@ -63,6 +63,10 @@ def main():
     parser.add_argument('--warmup', type=int, default=20)
     parser.add_argument('--iterations', type=int, default=100)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto')
+    parser.add_argument(
+        '--dtype', choices=['float32', 'float16', 'bfloat16'],
+        default='float32'
+    )
     args = parser.parse_args()
 
     if args.device == 'auto':
@@ -72,22 +76,32 @@ def main():
             raise RuntimeError('CUDA was requested but is unavailable')
         device = torch.device(args.device)
 
+    dtype = getattr(torch, args.dtype)
+    if device.type == 'cpu' and dtype == torch.float16:
+        raise RuntimeError('float16 benchmark requires CUDA')
+
     generator = torch.Generator(device=device).manual_seed(2023)
     shape = (args.batch_size, args.tokens, args.heads, args.head_dim)
-    queries = torch.randn(shape, device=device, generator=generator)
-    keys = torch.randn(shape, device=device, generator=generator)
-    values = torch.randn(shape, device=device, generator=generator)
+    queries = torch.randn(
+        shape, device=device, dtype=dtype, generator=generator
+    )
+    keys = torch.randn(
+        shape, device=device, dtype=dtype, generator=generator
+    )
+    values = torch.randn(
+        shape, device=device, dtype=dtype, generator=generator
+    )
 
     dense = FullAttention(
         mask_flag=False, attention_dropout=0.0
-    ).to(device)
+    ).to(device=device, dtype=dtype)
     induced = InducedVariateAttention(
         rank=args.rank,
         n_heads=args.heads,
         d_head=args.head_dim,
         time_tokens=args.time_tokens,
         attention_dropout=0.0,
-    ).to(device)
+    ).to(device=device, dtype=dtype)
 
     dense_result = benchmark(
         dense, queries, keys, values, args.warmup, args.iterations

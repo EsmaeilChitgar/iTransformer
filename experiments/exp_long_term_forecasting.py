@@ -148,10 +148,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         values = values_batch[
                             sample_index, :, head_index, :
                         ].float()
-                        singular_values = torch.linalg.svdvals(A)
                         centered = A - A.mean(dim=-1, keepdim=True)
                         centered_singular_values = torch.linalg.svdvals(centered)
                         U, S, Vh = torch.linalg.svd(A, full_matrices=False)
+                        singular_values = S
                         dense_output = A @ values
                         row = {
                             'window': window_index,
