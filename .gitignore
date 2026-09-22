@@ -133,3 +133,6 @@ dmypy.json
 /test_results/
 /results/
 /checkpoints/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
