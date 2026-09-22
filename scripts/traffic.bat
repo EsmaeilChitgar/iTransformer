@@ -59,7 +59,6 @@ python -u run.py ^
   --checkpoint_path "%CHECKPOINT%" ^
   --rank_ablation ^
   --rank_ablation_batches 16 ^
-  --rank_ablation_samples 1 ^
   --rank_ablation_ranks "8" ^
   --rank_ablation_layerwise ^
   --rank_ablation_layer_ranks "6,11,9,6" ^
@@ -92,7 +91,7 @@ echo IMPORTANT RESULTS
 echo ==========================================================
 
 echo.
-echo ---- Rank Stability ----
+echo ---- Existing Rank Stability ----
 if exist "rank_diagnostic\custom_val_DECISION_b32.txt" (
     type "rank_diagnostic\custom_val_DECISION_b32.txt"
 ) else (
@@ -100,11 +99,11 @@ if exist "rank_diagnostic\custom_val_DECISION_b32.txt" (
 )
 
 echo.
-echo ---- Functional Rank Ablation ----
-if exist "rank_diagnostic\custom_val_ablation_b16_DECISION.txt" (
-    type "rank_diagnostic\custom_val_ablation_b16_DECISION.txt"
+echo ---- Layer-wise Functional Rank Ablation ----
+if exist "rank_diagnostic\custom_val_ablation_b16_lw_6_11_9_6_DECISION.txt" (
+    type "rank_diagnostic\custom_val_ablation_b16_lw_6_11_9_6_DECISION.txt"
 ) else (
-    echo Ablation decision file not found.
+    echo Layer-wise ablation decision file not found.
 )
 
 echo.
@@ -112,8 +111,8 @@ echo ==========================================================
 echo Output files
 echo ==========================================================
 
-dir /b rank_diagnostic\custom_val_*b32*
-dir /b rank_diagnostic\custom_val_*ablation*
+dir /b "rank_diagnostic\custom_val_*b32*"
+dir /b "rank_diagnostic\custom_val_*ablation*"
 
 echo.
 echo ==========================================================
