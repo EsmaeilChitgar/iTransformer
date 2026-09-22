@@ -122,6 +122,64 @@ Benefiting from inverted Transformer modules:
 <img src="./figures/analysis.png" alt="" align=center />
 </p>
 
+## Low-rank cross-variate research path
+
+This fork contains two separate tools for studying low-rank interaction.  They
+answer different questions and their results should not be mixed:
+
+1. `--rank_analysis` applies a per-input truncated SVD to the trained dense
+   attention matrix.  It is an **oracle diagnostic**: it still constructs the
+   full matrix and is not an efficient implementation.
+2. `--induced_attention` replaces dense cross-variate attention with a
+   trainable read/write bottleneck containing `--attn_rank` latent
+   interactions.  All variate queries remain in the model.  Trailing temporal
+   covariate tokens can bypass the bottleneck with `--attn_time_tokens`.
+
+For Traffic with hourly time features, the practical starting point is rank 64
+and four exact temporal tokens:
+
+```bash
+python run.py --is_training 1 --model_id traffic_induced_r64 \
+  --model iTransformer --data custom --root_path ./dataset/traffic/ \
+  --data_path traffic.csv --features M --seq_len 96 --label_len 48 \
+  --pred_len 96 --enc_in 862 --dec_in 862 --c_out 862 --d_model 512 \
+  --n_heads 8 --e_layers 4 --d_ff 512 --batch_size 16 \
+  --learning_rate 0.001 --induced_attention --attn_rank 64 \
+  --attn_time_tokens 4
+```
+
+Use `--warm_start_checkpoint <path>` to copy compatible projection,
+feed-forward, normalization, embedding, and prediction weights from a dense
+checkpoint.  The inducing queries and per-head output gates remain newly
+initialized and must be fine-tuned.
+
+Run a deterministic, paired oracle analysis on a dense checkpoint with:
+
+```bash
+python run.py --is_training 0 --model_id traffic_rank_analysis \
+  --model iTransformer --data custom --root_path ./dataset/traffic/ \
+  --data_path traffic.csv --features M --seq_len 96 --label_len 48 \
+  --pred_len 96 --enc_in 862 --dec_in 862 --c_out 862 --d_model 512 \
+  --n_heads 8 --e_layers 4 --d_ff 512 --batch_size 16 \
+  --rank_analysis --checkpoint_path <checkpoint.pth> \
+  --rank_analysis_split test --rank_analysis_ranks 8,16,32,64,128
+```
+
+The analysis writes per-window paired errors, raw and row-centered spectral
+ranks, `AV` approximation errors, and bootstrap confidence intervals.  A zero
+`--rank_analysis_max_batches` uses the whole split.  Use a positive value only
+for a smoke test.
+
+Measure the two attention kernels on the target hardware with:
+
+```bash
+python tests/benchmark_variate_attention.py --device cuda --tokens 866 \
+  --batch_size 16 --heads 8 --head_dim 64 --rank 64 --time_tokens 4
+```
+
+End-to-end model latency must still be measured separately because embedding,
+feed-forward layers, and data transfer limit the attainable model speedup.
+
 ## Citation
 
 If you find this repo helpful, please cite our paper. 

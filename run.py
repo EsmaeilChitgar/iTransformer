@@ -87,6 +87,33 @@ if __name__ == '__main__':
     parser.add_argument('--partial_start_index', type=int, default=0, help='the start index of variates for partial training, '
                                                                            'you can select [partial_start_index, min(enc_in + partial_start_index, N)]')
 
+    # Low-rank cross-variate interaction
+    parser.add_argument('--induced_attention', action='store_true',
+                        help='replace dense variate attention with an induced latent bottleneck')
+    parser.add_argument('--attn_rank', type=int, default=64,
+                        help='number of induced interaction latents')
+    parser.add_argument('--attn_time_tokens', type=int, default=0,
+                        help='number of trailing time-feature tokens kept exact')
+    parser.add_argument('--attn_gate_init', type=float, default=1.0,
+                        help='initial induced-attention residual gate')
+    parser.add_argument('--warm_start_checkpoint', type=str, default='',
+                        help='dense checkpoint copied into compatible student parameters')
+
+    # Deterministic dense-attention oracle analysis
+    parser.add_argument('--rank_analysis', action='store_true',
+                        help='run deterministic SVD oracle rank analysis and exit')
+    parser.add_argument('--rank_analysis_split', type=str, default='val', choices=['val', 'test'])
+    parser.add_argument('--rank_analysis_ranks', type=str,
+                        default='1,2,4,8,16,32,64,128,256')
+    parser.add_argument('--rank_analysis_max_batches', type=int, default=0,
+                        help='0 evaluates the entire selected split')
+    parser.add_argument('--rank_analysis_spectral_batches', type=int, default=32,
+                        help='number of full-attention windows used for spectral statistics')
+    parser.add_argument('--rank_analysis_bootstrap_samples', type=int, default=10000)
+    parser.add_argument('--rank_analysis_output_dir', type=str, default='./rank_analysis')
+    parser.add_argument('--checkpoint_path', type=str, default='',
+                        help='checkpoint used by --rank_analysis')
+
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
 
@@ -96,6 +123,15 @@ if __name__ == '__main__':
         args.device_ids = [int(id_) for id_ in device_ids]
         args.gpu = args.device_ids[0]
 
+    if args.attn_rank <= 0:
+        raise ValueError('attn_rank must be positive')
+    if args.attn_time_tokens < 0:
+        raise ValueError('attn_time_tokens cannot be negative')
+    if args.rank_analysis and args.induced_attention:
+        raise ValueError('rank_analysis requires dense FullAttention')
+    if args.rank_analysis and not args.checkpoint_path:
+        raise ValueError('--checkpoint_path is required for rank_analysis')
+
     print('Args in experiment:')
     print(args)
 
@@ -103,6 +139,19 @@ if __name__ == '__main__':
         Exp = Exp_Long_Term_Forecast_Partial
     else: # MTSF: multivariate time series forecasting
         Exp = Exp_Long_Term_Forecast
+
+    if args.rank_analysis:
+        exp = Exp(args)
+        exp.load_checkpoint(args.checkpoint_path, strict=True)
+        exp.rank_analysis(
+            split=args.rank_analysis_split,
+            ranks=args.rank_analysis_ranks,
+            max_batches=args.rank_analysis_max_batches,
+            spectral_batches=args.rank_analysis_spectral_batches,
+            bootstrap_samples=args.rank_analysis_bootstrap_samples,
+            output_dir=args.rank_analysis_output_dir
+        )
+        raise SystemExit(0)
 
 
     if args.is_training:
@@ -126,8 +175,14 @@ if __name__ == '__main__':
                 args.distil,
                 args.des,
                 args.class_strategy, ii)
+            if args.induced_attention:
+                setting += '_induced_r{}_tt{}'.format(
+                    args.attn_rank, args.attn_time_tokens
+                )
 
             exp = Exp(args)  # set experiments
+            if args.warm_start_checkpoint:
+                exp.load_checkpoint(args.warm_start_checkpoint, strict=False)
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             exp.train(setting)
 
@@ -159,6 +214,10 @@ if __name__ == '__main__':
             args.distil,
             args.des,
             args.class_strategy, ii)
+        if args.induced_attention:
+            setting += '_induced_r{}_tt{}'.format(
+                args.attn_rank, args.attn_time_tokens
+            )
 
         exp = Exp(args)  # set experiments
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))

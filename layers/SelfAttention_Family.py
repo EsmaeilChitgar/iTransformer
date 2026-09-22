@@ -139,6 +139,14 @@ class FullAttention(nn.Module):
         self.output_attention = output_attention
         self.dropout = nn.Dropout(attention_dropout)
 
+        # Research controls.  They are inactive in ordinary training and make
+        # it possible to run paired oracle diagnostics on a trained model.
+        self.oracle_rank = 0
+        self.capture_diagnostics = False
+        self.last_attention = None
+        self.last_values = None
+        self.last_output = None
+
     def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
         B, L, H, E = queries.shape
         _, S, _, D = values.shape
@@ -152,13 +160,161 @@ class FullAttention(nn.Module):
 
             scores.masked_fill_(attn_mask.mask, -np.inf)
 
-        A = self.dropout(torch.softmax(scale * scores, dim=-1))
-        V = torch.einsum("bhls,bshd->blhd", A, values)
+        A_raw = torch.softmax(scale * scores, dim=-1)
+
+        max_rank = min(A_raw.shape[-2], A_raw.shape[-1])
+        rank = min(int(self.oracle_rank), max_rank)
+
+        if 0 < rank < max_rank:
+            # SVD is deliberately an oracle diagnostic.  It still forms the
+            # dense attention matrix and therefore cannot measure speedup.
+            # Run the factorization in fp32 because CUDA SVD does not support
+            # all reduced precision dtypes.
+            U, singular_values, Vh = torch.linalg.svd(
+                A_raw.float(), full_matrices=False
+            )
+            U_r = U[..., :rank]
+            S_r = singular_values[..., :rank]
+            Vh_r = Vh[..., :rank, :]
+            compressed_values = torch.einsum(
+                "bhrs,bshd->bhrd", Vh_r, values.float()
+            )
+            V = torch.einsum(
+                "bhlr,bhrd->blhd", U_r * S_r.unsqueeze(-2),
+                compressed_values
+            ).to(values.dtype)
+            A_return = None
+            if self.output_attention:
+                A_return = torch.matmul(
+                    U_r * S_r.unsqueeze(-2), Vh_r
+                ).to(A_raw.dtype)
+        else:
+            A = self.dropout(A_raw)
+            V = torch.einsum("bhls,bshd->blhd", A, values)
+            A_return = A
+
+        if self.capture_diagnostics:
+            self.last_attention = A_raw.detach()
+            self.last_values = values.detach()
+            self.last_output = V.detach()
 
         if self.output_attention:
-            return (V.contiguous(), A)
+            return (V.contiguous(), A_return)
         else:
             return (V.contiguous(), None)
+
+
+class InducedVariateAttention(nn.Module):
+    """Permutation-equivariant cross-variate attention through R latents.
+
+    All original variate queries remain present.  A small learned set of
+    inducing queries first summarizes keys and values into ``rank`` latent
+    interactions; every original token then reads from those latents.  The
+    optional trailing time-feature tokens bypass the bottleneck as exact
+    key/value pairs.
+
+    The effective interaction cost is O(N R D), and the parameters do not
+    depend on N or on variate order.
+    """
+
+    def __init__(self, rank, n_heads, d_head, time_tokens=0,
+                 attention_dropout=0.1, output_attention=False,
+                 gate_init=1.0):
+        super(InducedVariateAttention, self).__init__()
+        if rank <= 0:
+            raise ValueError('rank must be positive')
+        if n_heads <= 0 or d_head <= 0:
+            raise ValueError('n_heads and d_head must be positive')
+        if time_tokens < 0:
+            raise ValueError('time_tokens cannot be negative')
+
+        self.rank = int(rank)
+        self.n_heads = int(n_heads)
+        self.d_head = int(d_head)
+        self.time_tokens = int(time_tokens)
+        self.output_attention = output_attention
+        self.dropout = nn.Dropout(attention_dropout)
+
+        self.inducing_queries = nn.Parameter(
+            torch.empty(self.n_heads, self.rank, self.d_head)
+        )
+        nn.init.normal_(
+            self.inducing_queries, mean=0.0, std=self.d_head ** -0.5
+        )
+
+        # A direct gate permits a stable warm start from a dense checkpoint.
+        # gate_init=1 is appropriate for training the architecture from scratch.
+        self.output_gate = nn.Parameter(
+            torch.full((self.n_heads,), float(gate_init))
+        )
+
+    def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
+        if attn_mask is not None:
+            raise ValueError(
+                'InducedVariateAttention supports non-causal encoder '
+                'attention only'
+            )
+
+        B, Nq, H, D = queries.shape
+        _, Nk, Hk, Dk = keys.shape
+        if Nq != Nk or values.shape[1] != Nk:
+            raise ValueError('InducedVariateAttention requires self-attention')
+        if H != self.n_heads or Hk != H or D != self.d_head or Dk != D:
+            raise ValueError(
+                'Projected attention shape does not match configured heads'
+            )
+        if self.time_tokens >= Nk:
+            raise ValueError(
+                'time_tokens must be smaller than the total token count'
+            )
+
+        Q = queries.permute(0, 2, 1, 3)
+        K = keys.permute(0, 2, 1, 3)
+        V = values.permute(0, 2, 1, 3)
+        variate_count = Nk - self.time_tokens
+        K_var = K[:, :, :variate_count, :]
+        V_var = V[:, :, :variate_count, :]
+        scale = 1.0 / sqrt(D)
+
+        read_scores = torch.einsum(
+            'hrd,bhnd->bhrn', self.inducing_queries, K_var
+        ) * scale
+        read_attention = self.dropout(
+            torch.softmax(read_scores, dim=-1)
+        )
+        latent_keys = torch.einsum(
+            'bhrn,bhnd->bhrd', read_attention, K_var
+        )
+        latent_values = torch.einsum(
+            'bhrn,bhnd->bhrd', read_attention, V_var
+        )
+
+        if self.time_tokens:
+            write_keys = torch.cat(
+                [latent_keys, K[:, :, variate_count:, :]], dim=2
+            )
+            write_values = torch.cat(
+                [latent_values, V[:, :, variate_count:, :]], dim=2
+            )
+        else:
+            write_keys = latent_keys
+            write_values = latent_values
+
+        write_scores = torch.einsum(
+            'bhnd,bhkd->bhnk', Q, write_keys
+        ) * scale
+        write_attention = self.dropout(
+            torch.softmax(write_scores, dim=-1)
+        )
+        output = torch.einsum(
+            'bhnk,bhkd->bhnd', write_attention, write_values
+        )
+        output = output * self.output_gate.view(1, H, 1, 1)
+        output = output.permute(0, 2, 1, 3).contiguous()
+
+        if self.output_attention:
+            return output, write_attention.contiguous()
+        return output, None
 
 
 # Code implementation from https://github.com/zhouhaoyi/Informer2020

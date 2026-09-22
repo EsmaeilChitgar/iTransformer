@@ -19,8 +19,16 @@ def data_provider(args, flag):
 
     if flag == 'test':
         shuffle_flag = False
-        drop_last = True
+        drop_last = False
         batch_size = 1  # bsz=1 for evaluation
+        freq = args.freq
+    elif flag == 'val':
+        # Validation must be deterministic.  Shuffling the validation set made
+        # small diagnostic runs depend on which windows happened to appear in
+        # the first batches and also discarded the final incomplete batch.
+        shuffle_flag = False
+        drop_last = False
+        batch_size = args.batch_size
         freq = args.freq
     elif flag == 'pred':
         shuffle_flag = False

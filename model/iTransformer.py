@@ -2,7 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from layers.Transformer_EncDec import Encoder, EncoderLayer
-from layers.SelfAttention_Family import FullAttention, AttentionLayer
+from layers.SelfAttention_Family import (
+    FullAttention, AttentionLayer, InducedVariateAttention
+)
 from layers.Embed import DataEmbedding_inverted
 import numpy as np
 
@@ -18,17 +20,38 @@ class Model(nn.Module):
         self.pred_len = configs.pred_len
         self.output_attention = configs.output_attention
         self.use_norm = configs.use_norm
+        self.induced_attention = getattr(configs, 'induced_attention', False)
         # Embedding
         self.enc_embedding = DataEmbedding_inverted(configs.seq_len, configs.d_model, configs.embed, configs.freq,
                                                     configs.dropout)
         self.class_strategy = configs.class_strategy
+        if configs.d_model % configs.n_heads != 0:
+            raise ValueError('d_model must be divisible by n_heads')
+
+        def make_inner_attention():
+            if self.induced_attention:
+                return InducedVariateAttention(
+                    rank=configs.attn_rank,
+                    n_heads=configs.n_heads,
+                    d_head=configs.d_model // configs.n_heads,
+                    time_tokens=configs.attn_time_tokens,
+                    attention_dropout=configs.dropout,
+                    output_attention=configs.output_attention,
+                    gate_init=configs.attn_gate_init
+                )
+            return FullAttention(
+                False,
+                configs.factor,
+                attention_dropout=configs.dropout,
+                output_attention=configs.output_attention
+            )
+
         # Encoder-only architecture
         self.encoder = Encoder(
             [
                 EncoderLayer(
                     AttentionLayer(
-                        FullAttention(False, configs.factor, attention_dropout=configs.dropout,
-                                      output_attention=configs.output_attention), configs.d_model, configs.n_heads),
+                        make_inner_attention(), configs.d_model, configs.n_heads),
                     configs.d_model,
                     configs.d_ff,
                     dropout=configs.dropout,
@@ -38,6 +61,25 @@ class Model(nn.Module):
             norm_layer=torch.nn.LayerNorm(configs.d_model)
         )
         self.projector = nn.Linear(configs.d_model, configs.pred_len, bias=True)
+
+    def _inner_attentions(self):
+        model_layers = self.encoder.attn_layers
+        return [layer.attention.inner_attention for layer in model_layers]
+
+    def set_oracle_rank(self, rank):
+        """Apply an SVD oracle rank to every dense attention layer."""
+        rank = int(rank)
+        for attention in self._inner_attentions():
+            if not isinstance(attention, FullAttention):
+                raise RuntimeError(
+                    'Oracle rank analysis requires dense FullAttention'
+                )
+            attention.oracle_rank = rank
+
+    def set_attention_diagnostics(self, enabled):
+        for attention in self._inner_attentions():
+            if isinstance(attention, FullAttention):
+                attention.capture_diagnostics = bool(enabled)
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         if self.use_norm:

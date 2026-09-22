@@ -9,6 +9,9 @@ import os
 import time
 import warnings
 import numpy as np
+import csv
+import json
+from torch.utils.data import DataLoader
 
 warnings.filterwarnings('ignore')
 
@@ -35,6 +38,309 @@ class Exp_Long_Term_Forecast(Exp_Basic):
     def _select_criterion(self):
         criterion = nn.MSELoss()
         return criterion
+
+    def load_checkpoint(self, checkpoint_path, strict=True):
+        """Load a dense or warm-start checkpoint with explicit diagnostics."""
+        state = torch.load(checkpoint_path, map_location=self.device)
+        if isinstance(state, dict) and 'state_dict' in state:
+            state = state['state_dict']
+        state = {
+            (key[7:] if key.startswith('module.') else key): value
+            for key, value in state.items()
+        }
+        target = self.model.module if hasattr(self.model, 'module') else self.model
+        incompatible = target.load_state_dict(state, strict=strict)
+        if not strict:
+            print('Warm-start missing keys:', incompatible.missing_keys)
+            print('Warm-start unexpected keys:', incompatible.unexpected_keys)
+        return incompatible
+
+    @staticmethod
+    def _energy_rank(singular_values, threshold=0.95):
+        energy = singular_values.square()
+        if float(energy.sum()) <= 1e-12:
+            return 0
+        cumulative = torch.cumsum(energy, dim=-1)
+        cumulative = cumulative / cumulative[..., -1:].clamp_min(1e-12)
+        return int(
+            torch.searchsorted(
+                cumulative, torch.tensor(
+                    threshold,
+                    device=cumulative.device,
+                    dtype=cumulative.dtype
+                )
+            ).item() + 1
+        )
+
+    @staticmethod
+    def _bootstrap_mean_ci(deltas, samples, seed=2023):
+        values = np.asarray(deltas, dtype=np.float64)
+        if values.size == 0 or samples <= 0:
+            return [None, None]
+        rng = np.random.default_rng(seed)
+        bootstrap_means = []
+        remaining = int(samples)
+        while remaining:
+            chunk = min(remaining, 1000)
+            indices = rng.integers(
+                0, values.size, size=(chunk, values.size)
+            )
+            bootstrap_means.append(values[indices].mean(axis=1))
+            remaining -= chunk
+        bootstrap_means = np.concatenate(bootstrap_means)
+        return np.quantile(bootstrap_means, [0.025, 0.975]).tolist()
+
+    def rank_analysis(self, split, ranks, max_batches=0,
+                      spectral_batches=32, bootstrap_samples=10000,
+                      output_dir='./rank_analysis'):
+        """Evaluate SVD oracle ranks on deterministic, paired windows.
+
+        The method reports two distinct objects:
+        (1) spectral and AV errors measured on the original dense attention;
+        (2) end-to-end forecasting metrics when every encoder layer is
+            replaced by its per-input truncated-SVD oracle.
+        It is intentionally not a runtime benchmark.
+        """
+        parsed_ranks = sorted({
+            int(value.strip())
+            for value in str(ranks).split(',')
+            if value.strip() and int(value.strip()) > 0
+        })
+        if not parsed_ranks:
+            raise ValueError('rank_analysis requires at least one rank')
+
+        data_set, _ = self._get_data(flag=split)
+        data_loader = DataLoader(
+            data_set,
+            batch_size=1,
+            shuffle=False,
+            num_workers=self.args.num_workers,
+            drop_last=False
+        )
+        target = self.model.module if hasattr(self.model, 'module') else self.model
+        if not hasattr(target, 'set_oracle_rank'):
+            raise RuntimeError('Selected model does not support rank analysis')
+
+        os.makedirs(output_dir, exist_ok=True)
+        conditions = [0] + parsed_ranks
+        window_metrics = {
+            rank: {'mse': [], 'mae': []} for rank in conditions
+        }
+        spectral_rows = []
+        started = time.time()
+
+        def forward_batch(batch_x, batch_x_mark, dec_inp, batch_y_mark):
+            result = self.model(
+                batch_x, batch_x_mark, dec_inp, batch_y_mark
+            )
+            return result[0] if isinstance(result, tuple) else result
+
+        def record_spectral_stats(window_index):
+            for layer_index, attention in enumerate(
+                    target._inner_attentions(), start=1):
+                A_batch = attention.last_attention
+                values_batch = attention.last_values
+                if A_batch is None or values_batch is None:
+                    raise RuntimeError('Dense attention diagnostics were not captured')
+                for sample_index in range(A_batch.shape[0]):
+                    for head_index in range(A_batch.shape[1]):
+                        A = A_batch[sample_index, head_index].float()
+                        values = values_batch[
+                            sample_index, :, head_index, :
+                        ].float()
+                        singular_values = torch.linalg.svdvals(A)
+                        centered = A - A.mean(dim=-1, keepdim=True)
+                        centered_singular_values = torch.linalg.svdvals(centered)
+                        U, S, Vh = torch.linalg.svd(A, full_matrices=False)
+                        dense_output = A @ values
+                        row = {
+                            'window': window_index,
+                            'layer': layer_index,
+                            'head': head_index + 1,
+                            'tokens': A.shape[-1],
+                            'r95': self._energy_rank(singular_values),
+                            'centered_r95': self._energy_rank(
+                                centered_singular_values
+                            ),
+                            'leading_energy': float(
+                                singular_values[0].square()
+                                / singular_values.square().sum().clamp_min(1e-12)
+                            )
+                        }
+                        for rank in parsed_ranks:
+                            effective_rank = min(rank, S.numel())
+                            approximate_output = (
+                                (U[:, :effective_rank]
+                                 * S[:effective_rank].unsqueeze(0))
+                                @ (Vh[:effective_rank] @ values)
+                            )
+                            relative_error = torch.linalg.vector_norm(
+                                dense_output - approximate_output
+                            ) / torch.linalg.vector_norm(
+                                dense_output
+                            ).clamp_min(1e-12)
+                            row['av_error_r{}'.format(rank)] = float(
+                                relative_error
+                            )
+                        spectral_rows.append(row)
+
+        self.model.eval()
+        target.set_oracle_rank(0)
+        target.set_attention_diagnostics(True)
+        try:
+            with torch.no_grad():
+                for batch_index, batch in enumerate(data_loader):
+                    if max_batches and batch_index >= max_batches:
+                        break
+                    batch_x, batch_y, batch_x_mark, batch_y_mark = batch
+                    batch_x = batch_x.float().to(self.device)
+                    batch_y = batch_y.float().to(self.device)
+                    if 'PEMS' in self.args.data or 'Solar' in self.args.data:
+                        batch_x_mark = None
+                        batch_y_mark = None
+                    else:
+                        batch_x_mark = batch_x_mark.float().to(self.device)
+                        batch_y_mark = batch_y_mark.float().to(self.device)
+                    dec_inp = torch.zeros_like(
+                        batch_y[:, -self.args.pred_len:, :]
+                    )
+                    dec_inp = torch.cat([
+                        batch_y[:, :self.args.label_len, :], dec_inp
+                    ], dim=1).float().to(self.device)
+                    f_dim = -1 if self.args.features == 'MS' else 0
+                    truth = batch_y[:, -self.args.pred_len:, f_dim:]
+
+                    target.set_oracle_rank(0)
+                    target.set_attention_diagnostics(
+                        batch_index < spectral_batches
+                    )
+                    dense_prediction = forward_batch(
+                        batch_x, batch_x_mark, dec_inp, batch_y_mark
+                    )[:, -self.args.pred_len:, f_dim:]
+                    dense_error = dense_prediction - truth
+                    window_metrics[0]['mse'].append(
+                        float(dense_error.square().mean())
+                    )
+                    window_metrics[0]['mae'].append(
+                        float(dense_error.abs().mean())
+                    )
+                    if batch_index < spectral_batches:
+                        record_spectral_stats(batch_index)
+
+                    target.set_attention_diagnostics(False)
+                    for rank in parsed_ranks:
+                        target.set_oracle_rank(rank)
+                        prediction = forward_batch(
+                            batch_x, batch_x_mark, dec_inp, batch_y_mark
+                        )[:, -self.args.pred_len:, f_dim:]
+                        error = prediction - truth
+                        window_metrics[rank]['mse'].append(
+                            float(error.square().mean())
+                        )
+                        window_metrics[rank]['mae'].append(
+                            float(error.abs().mean())
+                        )
+
+                    if (batch_index + 1) % 25 == 0:
+                        print(
+                            'Rank analysis windows: {}'.format(batch_index + 1)
+                        )
+        finally:
+            target.set_oracle_rank(0)
+            target.set_attention_diagnostics(False)
+
+        if not window_metrics[0]['mse']:
+            raise RuntimeError('rank_analysis processed no windows')
+
+        window_path = os.path.join(output_dir, '{}_paired_windows.csv'.format(split))
+        with open(window_path, 'w', newline='') as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=['window', 'rank', 'mse', 'mae',
+                            'mse_delta_vs_full', 'mae_delta_vs_full']
+            )
+            writer.writeheader()
+            for rank in conditions:
+                for index, mse_value in enumerate(window_metrics[rank]['mse']):
+                    writer.writerow({
+                        'window': index,
+                        'rank': rank,
+                        'mse': mse_value,
+                        'mae': window_metrics[rank]['mae'][index],
+                        'mse_delta_vs_full': (
+                            mse_value - window_metrics[0]['mse'][index]
+                        ),
+                        'mae_delta_vs_full': (
+                            window_metrics[rank]['mae'][index]
+                            - window_metrics[0]['mae'][index]
+                        )
+                    })
+
+        spectral_path = os.path.join(
+            output_dir, '{}_spectral_output_errors.csv'.format(split)
+        )
+        if spectral_rows:
+            with open(spectral_path, 'w', newline='') as handle:
+                writer = csv.DictWriter(
+                    handle, fieldnames=list(spectral_rows[0].keys())
+                )
+                writer.writeheader()
+                writer.writerows(spectral_rows)
+
+        full_mse = float(np.mean(window_metrics[0]['mse']))
+        full_mae = float(np.mean(window_metrics[0]['mae']))
+        summary = {
+            'split': split,
+            'windows': len(window_metrics[0]['mse']),
+            'ranks': parsed_ranks,
+            'spectral_windows': min(
+                spectral_batches, len(window_metrics[0]['mse'])
+            ),
+            'full': {'mse': full_mse, 'mae': full_mae},
+            'conditions': {},
+            'elapsed_seconds': time.time() - started,
+            'note': (
+                'SVD conditions are functional oracles. They form dense '
+                'attention and do not measure efficient runtime.'
+            )
+        }
+        for rank in parsed_ranks:
+            mse_values = np.asarray(window_metrics[rank]['mse'])
+            mae_values = np.asarray(window_metrics[rank]['mae'])
+            mse_deltas = mse_values - np.asarray(window_metrics[0]['mse'])
+            mae_deltas = mae_values - np.asarray(window_metrics[0]['mae'])
+            mean_mse = float(mse_values.mean())
+            mean_mae = float(mae_values.mean())
+            summary['conditions'][str(rank)] = {
+                'mse': mean_mse,
+                'mae': mean_mae,
+                'mse_gap_percent_ratio_of_means': 100.0 * (
+                    mean_mse - full_mse
+                ) / full_mse,
+                'mae_gap_percent_ratio_of_means': 100.0 * (
+                    mean_mae - full_mae
+                ) / full_mae,
+                'mean_paired_mse_delta': float(mse_deltas.mean()),
+                'mean_paired_mae_delta': float(mae_deltas.mean()),
+                'paired_mse_delta_bootstrap_95': self._bootstrap_mean_ci(
+                    mse_deltas, bootstrap_samples, seed=2023 + rank
+                ),
+                'paired_mae_delta_bootstrap_95': self._bootstrap_mean_ci(
+                    mae_deltas, bootstrap_samples, seed=4046 + rank
+                )
+            }
+
+        summary_path = os.path.join(
+            output_dir, '{}_rank_analysis_summary.json'.format(split)
+        )
+        with open(summary_path, 'w') as handle:
+            json.dump(summary, handle, indent=2)
+        print(json.dumps(summary, indent=2))
+        print('Saved:', window_path)
+        if spectral_rows:
+            print('Saved:', spectral_path)
+        print('Saved:', summary_path)
+        return summary
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
