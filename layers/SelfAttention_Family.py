@@ -132,45 +132,277 @@ class FlashAttention(nn.Module):
 
 
 class FullAttention(nn.Module):
-    def __init__(self, mask_flag=True, factor=5, scale=None, attention_dropout=0.1, output_attention=False):
+
+    def __init__(
+            self,
+            mask_flag=True,
+            factor=5,
+            scale=None,
+            attention_dropout=0.1,
+            output_attention=False
+    ):
         super(FullAttention, self).__init__()
+
         self.scale = scale
         self.mask_flag = mask_flag
         self.output_attention = output_attention
-        self.dropout = nn.Dropout(attention_dropout)
+        self.dropout = nn.Dropout(
+            attention_dropout
+        )
+
         self.capture_attention = False
+
+        # ---------------------------------------------------------
+        # Existing global/layer-wise rank
+        #
+        # int:
+        #     0  -> full attention
+        #     >0 -> same rank for this attention module
+        # ---------------------------------------------------------
+
         self.rank_ablation = 0
 
-    def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
+        # ---------------------------------------------------------
+        # New head-wise rank
+        #
+        # None:
+        #     head-wise mode disabled
+        #
+        # list[int]:
+        #     one rank per attention head
+        # ---------------------------------------------------------
+
+        self.head_rank_ablation = None
+
+    def forward(
+            self,
+            queries,
+            keys,
+            values,
+            attn_mask,
+            tau=None,
+            delta=None
+    ):
+
         B, L, H, E = queries.shape
         _, S, _, D = values.shape
-        scale = self.scale or 1. / sqrt(E)
 
-        scores = torch.einsum("blhe,bshe->bhls", queries, keys)
+        scale = (
+            self.scale
+            or 1. / sqrt(E)
+        )
+
+        # ---------------------------------------------------------
+        # Full attention scores
+        # ---------------------------------------------------------
+
+        scores = torch.einsum(
+            "blhe,bshe->bhls",
+            queries,
+            keys
+        )
+
+        # ---------------------------------------------------------
+        # Causal mask
+        # ---------------------------------------------------------
 
         if self.mask_flag:
+
             if attn_mask is None:
-                attn_mask = TriangularCausalMask(B, L, device=queries.device)
 
-            scores.masked_fill_(attn_mask.mask, -np.inf)
+                attn_mask = TriangularCausalMask(
+                    B,
+                    L,
+                    device=queries.device
+                )
 
-        A_raw = torch.softmax(scale * scores, dim=-1)
+            scores.masked_fill_(
+                attn_mask.mask,
+                -np.inf
+            )
 
-        # -------------------------------------------------------------
-        # Functional rank ablation
+        # ---------------------------------------------------------
+        # Full softmax attention
+        # ---------------------------------------------------------
+
+        A_raw = torch.softmax(
+            scale * scores,
+            dim=-1
+        )
+
+        # =========================================================
+        # HEAD-WISE RANK ABLATION
+        # =========================================================
         #
-        # rank_ablation = 0:
-        #     original full attention
+        # Example:
         #
-        # rank_ablation > 0:
-        #     A ≈ U_r S_r V_r^T
+        # layer 1:
+        # [7, 5, 11, 9, 8, 6, 10, 8]
         #
-        # Important:
-        # this is an ORACLE / FUNCTIONAL experiment.
-        # It still computes the full attention matrix.
-        # It is NOT a speed experiment.
-        # -------------------------------------------------------------
-        if self.rank_ablation > 0:
+        # Each head gets its own SVD truncation rank.
+        #
+        # This is still a FUNCTIONAL / ORACLE experiment:
+        #
+        #   1. full attention matrix is computed
+        #   2. full SVD is computed
+        #   3. truncation is applied afterwards
+        #
+        # Therefore this branch does NOT represent the runtime
+        # of a true efficient low-rank implementation.
+        # =========================================================
+
+        if self.head_rank_ablation is not None:
+
+            head_ranks = torch.as_tensor(
+                self.head_rank_ablation,
+                dtype=torch.long,
+                device=A_raw.device
+            )
+
+            # -----------------------------------------------------
+            # Validate number of heads
+            # -----------------------------------------------------
+
+            if head_ranks.numel() != H:
+
+                raise ValueError(
+                    f'Expected {H} head-wise ranks, '
+                    f'got {head_ranks.numel()}: '
+                    f'{self.head_rank_ablation}'
+                )
+
+            # -----------------------------------------------------
+            # Clamp invalid ranks
+            # -----------------------------------------------------
+
+            max_rank = min(
+                A_raw.shape[-1],
+                A_raw.shape[-2]
+            )
+
+            head_ranks = torch.clamp(
+                head_ranks,
+                min=1,
+                max=max_rank
+            )
+
+            # -----------------------------------------------------
+            # Only compute up to the maximum requested rank.
+            #
+            # We still perform one full SVD because this is an
+            # oracle functional experiment.
+            # -----------------------------------------------------
+
+            r_max = int(
+                head_ranks.max().item()
+            )
+
+            U, S_values, Vh = torch.linalg.svd(
+                A_raw,
+                full_matrices=False
+            )
+
+            U_r = U[
+                   ...,
+                   :r_max
+                   ]
+
+            S_r = S_values[
+                  ...,
+                  :r_max
+                  ]
+
+            Vh_r = Vh[
+                   ...,
+                   :r_max,
+                   :
+                   ]
+
+            # -----------------------------------------------------
+            # Rank mask:
+            #
+            # shape = [1, H, r_max]
+            #
+            # head h keeps only its first rank[h] singular values.
+            # -----------------------------------------------------
+
+            component_ids = torch.arange(
+                r_max,
+                device=A_raw.device
+            )
+
+            rank_mask = (
+                component_ids.unsqueeze(0)
+                < head_ranks.unsqueeze(1)
+            )
+
+            rank_mask = rank_mask.to(
+                A_raw.dtype
+            )
+
+            rank_mask = rank_mask.unsqueeze(
+                0
+            )
+
+            # -----------------------------------------------------
+            # Vh_r @ values
+            #
+            # Vh_r:
+            #     [B, H, r_max, S]
+            #
+            # values:
+            #     [B, S, H, D]
+            #
+            # result:
+            #     [B, H, r_max, D]
+            # -----------------------------------------------------
+
+            compressed_values = torch.einsum(
+                "bhrs,bshd->bhrd",
+                Vh_r,
+                values
+            )
+
+            # -----------------------------------------------------
+            # U_r * S_r
+            #
+            # U_r:
+            #     [B, H, L, r_max]
+            #
+            # S_r:
+            #     [B, H, r_max]
+            #
+            # Add head-specific rank mask.
+            # -----------------------------------------------------
+
+            U_S = (
+                U_r
+                * S_r.unsqueeze(-2)
+            )
+
+            U_S = (
+                U_S
+                * rank_mask.unsqueeze(-2)
+            )
+
+            # -----------------------------------------------------
+            # U_r @ (S_r * V_r^T V)
+            #
+            # result:
+            #     [B, L, H, D]
+            # -----------------------------------------------------
+
+            V = torch.einsum(
+                "bhlr,bhrd->blhd",
+                U_S,
+                compressed_values
+            )
+
+        # =========================================================
+        # GLOBAL / LAYER-WISE RANK ABLATION
+        # =========================================================
+
+        elif self.rank_ablation > 0:
 
             r = min(
                 self.rank_ablation,
@@ -183,27 +415,43 @@ class FullAttention(nn.Module):
                 full_matrices=False
             )
 
-            U_r = U[..., :r]
-            S_r = S_values[..., :r]
-            Vh_r = Vh[..., :r, :]
+            U_r = U[
+                   ...,
+                   :r
+                   ]
 
-            # Vh_r @ values
+            S_r = S_values[
+                  ...,
+                  :r
+                  ]
+
+            Vh_r = Vh[
+                   ...,
+                   :r,
+                   :
+                   ]
+
             compressed_values = torch.einsum(
                 "bhrs,bshd->bhrd",
                 Vh_r,
                 values
             )
 
-            # U_r @ (S_r * compressed_values)
             V = torch.einsum(
                 "bhlr,bhrd->blhd",
                 U_r * S_r.unsqueeze(-2),
                 compressed_values
             )
 
+        # =========================================================
+        # ORIGINAL FULL ATTENTION
+        # =========================================================
+
         else:
 
-            A = self.dropout(A_raw)
+            A = self.dropout(
+                A_raw
+            )
 
             V = torch.einsum(
                 "bhls,bshd->blhd",
@@ -211,10 +459,24 @@ class FullAttention(nn.Module):
                 values
             )
 
-        if self.output_attention or self.capture_attention:
-            return V.contiguous(), A_raw.contiguous()
+        # ---------------------------------------------------------
+        # Return attention if requested
+        # ---------------------------------------------------------
 
-        return V.contiguous(), None
+        if (
+                self.output_attention
+                or self.capture_attention
+        ):
+
+            return (
+                V.contiguous(),
+                A_raw.contiguous()
+            )
+
+        return (
+            V.contiguous(),
+            None
+        )
 
 
 # Code implementation from https://github.com/zhouhaoyi/Informer2020

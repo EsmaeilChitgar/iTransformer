@@ -53,16 +53,16 @@ python -u run.py ^
   --d_ff 512 ^
   --batch_size 16 ^
   --learning_rate 0.001 ^
-  --train_epochs 10 ^
   --num_workers 1 ^
   --rank_analysis_only ^
   --checkpoint_path "%CHECKPOINT%" ^
-  --rank_ablation ^
+  --rank_diagnostic ^
+  --rank_diagnostic_split val ^
+  --rank_diagnostic_batches 32 ^
+  --rank_diagnostic_samples 1 ^
+  --rank_ablation_headwise ^
   --rank_ablation_batches 16 ^
-  --rank_ablation_ranks "8" ^
-  --rank_ablation_layerwise ^
-  --rank_ablation_layer_ranks "6,11,9,6" ^
-  --rank_ablation_tag "lw_6_11_9_6"
+  --rank_ablation_head_csv ".\rank_diagnostic\custom_val_attention_summary_b32.csv"
 
 if errorlevel 1 (
     echo.

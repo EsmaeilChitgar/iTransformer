@@ -18,6 +18,7 @@ class Model(nn.Module):
         self.pred_len = configs.pred_len
         self.output_attention = configs.output_attention
         self.use_norm = configs.use_norm
+        self.n_heads = configs.n_heads
         # Embedding
         self.enc_embedding = DataEmbedding_inverted(configs.seq_len, configs.d_model, configs.embed, configs.freq,
                                                     configs.dropout)
@@ -74,22 +75,196 @@ class Model(nn.Module):
             if hasattr(inner_attention, 'capture_attention'):
                 inner_attention.capture_attention = enabled
 
-    def set_rank_ablation(self, rank=0, layer_ranks=None):
-        num_layers = len(self.encoder.attn_layers)
+    def set_rank_ablation(
+            self,
+            rank=0,
+            layer_ranks=None,
+            head_ranks=None
+    ):
+        """
+        Configure attention rank ablation.
 
-        if layer_ranks is None and self.rank_ablation_layerwise:
-            layer_ranks = self.rank_ablation_layer_ranks
+        rank=0:
+            Always restore original full attention.
 
-        if layer_ranks is None:
-            layer_ranks = [rank] * num_layers
+        rank>0:
+            Global mode:
+                same rank for every layer.
+
+            Layer-wise mode:
+                one rank per encoder layer.
+
+            Head-wise mode:
+                one list of ranks per encoder layer.
+                Each list contains one rank per head.
+
+        Examples
+        --------
+        Full:
+
+            set_rank_ablation(0)
+
+        Global R=8:
+
+            set_rank_ablation(8)
+
+        Layer-wise:
+
+            set_rank_ablation(
+                8,
+                layer_ranks=[6, 11, 9, 6]
+            )
+
+        Head-wise:
+
+            set_rank_ablation(
+                8,
+                head_ranks=[
+                    [8, 7, 10, 9, 8, 6, 9, 7],
+                    [7, 8, 11, 9, 8, 7, 9, 7],
+                    [6, 8, 12, 10, 7, 8, 10, 7],
+                    [7, 7, 10, 9, 8, 7, 10, 7]
+                ]
+            )
+        """
+
+        num_layers = len(
+            self.encoder.attn_layers
+        )
+
+        # -------------------------------------------------------------
+        # Full attention MUST always win.
+        # -------------------------------------------------------------
+
+        if rank == 0:
+
+            for layer in self.encoder.attn_layers:
+                inner_attention = (
+                    layer
+                    .attention
+                    .inner_attention
+                )
+
+                inner_attention.rank_ablation = 0
+
+                inner_attention.head_rank_ablation = None
+
+            return
+
+        # -------------------------------------------------------------
+        # HEAD-WISE MODE
+        # -------------------------------------------------------------
+
+        if head_ranks is not None:
+
+            head_ranks = [
+                list(layer_ranks_for_heads)
+                for layer_ranks_for_heads in head_ranks
+            ]
+
+            if len(head_ranks) != num_layers:
+                raise ValueError(
+                    f'Expected {num_layers} layer-wise head-rank '
+                    f'lists, got {len(head_ranks)}'
+                )
+
+            expected_heads = int(
+                self.n_heads
+            )
+
+            for layer_idx, ranks_for_layer in enumerate(
+                    head_ranks
+            ):
+
+                if len(ranks_for_layer) != expected_heads:
+                    raise ValueError(
+                        f'Layer {layer_idx + 1}: '
+                        f'expected {expected_heads} head ranks, '
+                        f'got {len(ranks_for_layer)}: '
+                        f'{ranks_for_layer}'
+                    )
+
+                for r in ranks_for_layer:
+
+                    if int(r) <= 0:
+                        raise ValueError(
+                            f'Head-wise ranks must be > 0. '
+                            f'Layer {layer_idx + 1}: '
+                            f'{ranks_for_layer}'
+                        )
+
+            # ---------------------------------------------------------
+            # Apply
+            # ---------------------------------------------------------
+
+            for i, layer in enumerate(
+                    self.encoder.attn_layers
+            ):
+                inner_attention = (
+                    layer
+                    .attention
+                    .inner_attention
+                )
+
+                inner_attention.rank_ablation = 0
+
+                inner_attention.head_rank_ablation = [
+                    int(r)
+                    for r in head_ranks[i]
+                ]
+
+            return
+
+        # -------------------------------------------------------------
+        # LAYER-WISE MODE
+        # -------------------------------------------------------------
+
+        if layer_ranks is not None:
+
+            layer_ranks = list(
+                layer_ranks
+            )
+
+        # -------------------------------------------------------------
+        # GLOBAL MODE
+        # -------------------------------------------------------------
+
+        else:
+
+            layer_ranks = [
+                rank
+                for _ in range(num_layers)
+            ]
+
+        # -------------------------------------------------------------
+        # Validate number of layers
+        # -------------------------------------------------------------
 
         if len(layer_ranks) != num_layers:
             raise ValueError(
-                f'Expected {num_layers} layer ranks, got {len(layer_ranks)}: {layer_ranks}'
+                f'Expected {num_layers} layer ranks, '
+                f'got {len(layer_ranks)}: '
+                f'{layer_ranks}'
             )
 
-        for i, layer in enumerate(self.encoder.attn_layers):
-            layer.attention.inner_attention.rank_ablation = int(layer_ranks[i])
+        # -------------------------------------------------------------
+        # Apply layer/global ranks
+        # -------------------------------------------------------------
+
+        for i, layer in enumerate(
+                self.encoder.attn_layers
+        ):
+            inner_attention = (
+                layer
+                .attention
+                .inner_attention
+            )
+
+            inner_attention.rank_ablation = int(
+                layer_ranks[i]
+            )
+
+            inner_attention.head_rank_ablation = None
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         if self.use_norm:

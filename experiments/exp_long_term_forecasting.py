@@ -13,6 +13,7 @@ import csv
 import json
 import math
 from collections import defaultdict
+import pandas as pd
 
 warnings.filterwarnings('ignore')
 
@@ -1853,4 +1854,2349 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         print('Saved:')
         print(csv_path)
         print(meta_path)
+        print(decision_path)
+
+    def rank_ablation_paired(
+            self,
+            flag='val',
+            max_batches=16,
+            global_rank=8,
+            layer_ranks='6,11,9,6'
+    ):
+        """
+        Paired functional comparison on exactly the same validation
+        windows:
+
+            1) Full attention
+            2) Global rank-R attention
+            3) Layer-wise rank attention
+
+        Each condition is evaluated on the same sample/window before
+        moving to the next batch.
+
+        This is a functional ablation only. It does not benchmark the
+        runtime or memory of a true efficient low-rank implementation.
+        """
+
+        model = self.model.module if hasattr(
+            self.model,
+            'module'
+        ) else self.model
+
+        # -------------------------------------------------------------
+        # Parse layer-wise ranks
+        # -------------------------------------------------------------
+
+        if isinstance(layer_ranks, str):
+
+            layer_rank_values = [
+                int(x.strip())
+                for x in layer_ranks.split(',')
+                if x.strip()
+            ]
+
+        else:
+
+            layer_rank_values = list(
+                layer_ranks
+            )
+
+        num_layers = len(
+            model.encoder.attn_layers
+        )
+
+        if len(layer_rank_values) != num_layers:
+            raise ValueError(
+                f'Expected {num_layers} layer-wise ranks, '
+                f'got {len(layer_rank_values)}: '
+                f'{layer_rank_values}'
+            )
+
+        for r in layer_rank_values:
+
+            if r <= 0:
+                raise ValueError(
+                    'Layer-wise ranks must be > 0. '
+                    f'Got: {layer_rank_values}'
+                )
+
+        if global_rank <= 0:
+            raise ValueError(
+                f'global_rank must be > 0. '
+                f'Got: {global_rank}'
+            )
+
+        # -------------------------------------------------------------
+        # Console header
+        # -------------------------------------------------------------
+
+        print('\n' + '=' * 95)
+        print('PAIRED RANK ABLATION')
+        print('=' * 95)
+
+        print(
+            'Split:',
+            flag
+        )
+
+        print(
+            'Batches:',
+            max_batches
+        )
+
+        print(
+            'Samples per batch: 1'
+        )
+
+        print(
+            f'Global rank: {global_rank}'
+        )
+
+        print(
+            'Layer-wise ranks:',
+            layer_rank_values
+        )
+
+        print(
+            'Global rank budget:',
+            global_rank * num_layers
+        )
+
+        print(
+            'Layer-wise rank budget:',
+            sum(layer_rank_values)
+        )
+
+        print('=' * 95)
+
+        # -------------------------------------------------------------
+        # Data
+        # -------------------------------------------------------------
+
+        data_set, data_loader = self._get_data(
+            flag=flag
+        )
+
+        model.eval()
+
+        # -------------------------------------------------------------
+        # Per-batch paired results
+        # -------------------------------------------------------------
+
+        paired_rows = []
+
+        try:
+
+            with torch.no_grad():
+
+                for batch_idx, (
+                        batch_x,
+                        batch_y,
+                        batch_x_mark,
+                        batch_y_mark
+                ) in enumerate(data_loader):
+
+                    if batch_idx >= max_batches:
+                        break
+
+                    # -------------------------------------------------
+                    # Exactly one sample from the SAME DataLoader batch
+                    # is used for all three conditions.
+                    # -------------------------------------------------
+
+                    batch_x = batch_x[:1].float().to(
+                        self.device
+                    )
+
+                    batch_y = batch_y[:1].float().to(
+                        self.device
+                    )
+
+                    if (
+                            'PEMS' in self.args.data
+                            or 'Solar' in self.args.data
+                    ):
+
+                        batch_x_mark = None
+                        batch_y_mark = None
+
+                    else:
+
+                        batch_x_mark = (
+                            batch_x_mark[:1]
+                            .float()
+                            .to(self.device)
+                        )
+
+                        batch_y_mark = (
+                            batch_y_mark[:1]
+                            .float()
+                            .to(self.device)
+                        )
+
+                    # -------------------------------------------------
+                    # Decoder input
+                    # -------------------------------------------------
+
+                    dec_inp = torch.zeros_like(
+                        batch_y[
+                        :,
+                        -self.args.pred_len:,
+                        :
+                        ]
+                    ).float()
+
+                    dec_inp = torch.cat(
+                        [
+                            batch_y[
+                            :,
+                            :self.args.label_len,
+                            :
+                            ],
+                            dec_inp
+                        ],
+                        dim=1
+                    ).float().to(self.device)
+
+                    # -------------------------------------------------
+                    # Helper: run one condition
+                    # -------------------------------------------------
+
+                    def evaluate_current_configuration():
+
+                        outputs = self.model(
+                            batch_x,
+                            batch_x_mark,
+                            dec_inp,
+                            batch_y_mark
+                        )
+
+                        if self.args.output_attention:
+                            outputs = outputs[0]
+
+                        f_dim = (
+                            -1
+                            if self.args.features == 'MS'
+                            else 0
+                        )
+
+                        outputs = outputs[
+                                  :,
+                                  -self.args.pred_len:,
+                                  f_dim:
+                                  ]
+
+                        true = batch_y[
+                               :,
+                               -self.args.pred_len:,
+                               f_dim:
+                               ]
+
+                        mse = torch.mean(
+                            (outputs - true) ** 2
+                        ).item()
+
+                        mae = torch.mean(
+                            torch.abs(outputs - true)
+                        ).item()
+
+                        return mse, mae
+
+                    # -------------------------------------------------
+                    # Condition 1: Full attention
+                    # -------------------------------------------------
+
+                    model.set_rank_ablation(
+                        0
+                    )
+
+                    if batch_idx == 0:
+                        applied_ranks = [
+                            int(
+                                layer.attention.inner_attention.rank_ablation
+                            )
+                            for layer in model.encoder.attn_layers
+                        ]
+
+                        print(
+                            f'Full applied ranks: '
+                            f'{applied_ranks}'
+                        )
+
+                    full_mse, full_mae = (
+                        evaluate_current_configuration()
+                    )
+
+                    # -------------------------------------------------
+                    # Condition 2: Global rank
+                    # -------------------------------------------------
+
+                    model.set_rank_ablation(
+                        global_rank
+                    )
+
+                    if batch_idx == 0:
+                        applied_ranks = [
+                            int(
+                                layer.attention.inner_attention.rank_ablation
+                            )
+                            for layer in model.encoder.attn_layers
+                        ]
+
+                        print(
+                            f'Global-R{global_rank} applied ranks: '
+                            f'{applied_ranks}'
+                        )
+
+                    global_mse, global_mae = (
+                        evaluate_current_configuration()
+                    )
+
+                    # -------------------------------------------------
+                    # Condition 3: Layer-wise rank
+                    # -------------------------------------------------
+
+                    model.set_rank_ablation(
+                        global_rank,
+                        layer_ranks=layer_rank_values
+                    )
+
+                    if batch_idx == 0:
+                        applied_ranks = [
+                            int(
+                                layer.attention.inner_attention.rank_ablation
+                            )
+                            for layer in model.encoder.attn_layers
+                        ]
+
+                        print(
+                            f'LayerWise-{layer_rank_values} applied ranks: '
+                            f'{applied_ranks}'
+                        )
+
+                    layerwise_mse, layerwise_mae = (
+                        evaluate_current_configuration()
+                    )
+
+                    # -------------------------------------------------
+                    # Paired gaps relative to the SAME Full result
+                    # -------------------------------------------------
+
+                    global_mse_gap = (
+                            100.0
+                            * (global_mse - full_mse)
+                            / max(abs(full_mse), 1e-12)
+                    )
+
+                    global_mae_gap = (
+                            100.0
+                            * (global_mae - full_mae)
+                            / max(abs(full_mae), 1e-12)
+                    )
+
+                    layerwise_mse_gap = (
+                            100.0
+                            * (layerwise_mse - full_mse)
+                            / max(abs(full_mse), 1e-12)
+                    )
+
+                    layerwise_mae_gap = (
+                            100.0
+                            * (layerwise_mae - full_mae)
+                            / max(abs(full_mae), 1e-12)
+                    )
+
+                    row = {
+                        'batch': batch_idx + 1,
+                        'full_mse': full_mse,
+                        'global_mse': global_mse,
+                        'layerwise_mse': layerwise_mse,
+                        'global_mse_gap_percent': global_mse_gap,
+                        'layerwise_mse_gap_percent': layerwise_mse_gap,
+                        'full_mae': full_mae,
+                        'global_mae': global_mae,
+                        'layerwise_mae': layerwise_mae,
+                        'global_mae_gap_percent': global_mae_gap,
+                        'layerwise_mae_gap_percent': layerwise_mae_gap
+                    }
+
+                    paired_rows.append(
+                        row
+                    )
+
+                    # -------------------------------------------------
+                    # Restore full attention after each batch
+                    # -------------------------------------------------
+
+                    model.set_rank_ablation(
+                        0
+                    )
+
+                    print(
+                        f'Batch {batch_idx + 1}/{max_batches}: '
+                        f'Full MSE={full_mse:.8f} | '
+                        f'Global-R{global_rank}={global_mse:.8f} '
+                        f'({global_mse_gap:+.3f}%) | '
+                        f'LayerWise={layerwise_mse:.8f} '
+                        f'({layerwise_mse_gap:+.3f}%)'
+                    )
+
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+        finally:
+
+            model.set_rank_ablation(
+                0
+            )
+
+            model.eval()
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # -------------------------------------------------------------
+        # Aggregate paired results
+        # -------------------------------------------------------------
+
+        if not paired_rows:
+            raise RuntimeError(
+                'No paired ablation results were collected.'
+            )
+
+        full_mse_values = [
+            row['full_mse']
+            for row in paired_rows
+        ]
+
+        global_mse_values = [
+            row['global_mse']
+            for row in paired_rows
+        ]
+
+        layerwise_mse_values = [
+            row['layerwise_mse']
+            for row in paired_rows
+        ]
+
+        full_mae_values = [
+            row['full_mae']
+            for row in paired_rows
+        ]
+
+        global_mae_values = [
+            row['global_mae']
+            for row in paired_rows
+        ]
+
+        layerwise_mae_values = [
+            row['layerwise_mae']
+            for row in paired_rows
+        ]
+
+        global_mse_gaps = [
+            row['global_mse_gap_percent']
+            for row in paired_rows
+        ]
+
+        layerwise_mse_gaps = [
+            row['layerwise_mse_gap_percent']
+            for row in paired_rows
+        ]
+
+        global_mae_gaps = [
+            row['global_mae_gap_percent']
+            for row in paired_rows
+        ]
+
+        layerwise_mae_gaps = [
+            row['layerwise_mae_gap_percent']
+            for row in paired_rows
+        ]
+
+        full_mse = float(
+            np.mean(full_mse_values)
+        )
+
+        global_mse = float(
+            np.mean(global_mse_values)
+        )
+
+        layerwise_mse = float(
+            np.mean(layerwise_mse_values)
+        )
+
+        full_mae = float(
+            np.mean(full_mae_values)
+        )
+
+        global_mae = float(
+            np.mean(global_mae_values)
+        )
+
+        layerwise_mae = float(
+            np.mean(layerwise_mae_values)
+        )
+
+        global_mse_gap = float(
+            np.mean(global_mse_gaps)
+        )
+
+        layerwise_mse_gap = float(
+            np.mean(layerwise_mse_gaps)
+        )
+
+        global_mae_gap = float(
+            np.mean(global_mae_gaps)
+        )
+
+        layerwise_mae_gap = float(
+            np.mean(layerwise_mae_gaps)
+        )
+
+        # -------------------------------------------------------------
+        # Direct comparison:
+        # Layer-wise vs Global
+        # -------------------------------------------------------------
+
+        layerwise_minus_global_mse = (
+                layerwise_mse - global_mse
+        )
+
+        layerwise_minus_global_mae = (
+                layerwise_mae - global_mae
+        )
+
+        layerwise_vs_global_mse_percent = (
+                100.0
+                * layerwise_minus_global_mse
+                / max(abs(global_mse), 1e-12)
+        )
+
+        layerwise_vs_global_mae_percent = (
+                100.0
+                * layerwise_minus_global_mae
+                / max(abs(global_mae), 1e-12)
+        )
+
+        # -------------------------------------------------------------
+        # Paired per-window advantage
+        # -------------------------------------------------------------
+
+        paired_mse_deltas = [
+            row['layerwise_mse'] - row['global_mse']
+            for row in paired_rows
+        ]
+
+        paired_mae_deltas = [
+            row['layerwise_mae'] - row['global_mae']
+            for row in paired_rows
+        ]
+
+        paired_mse_delta_mean = float(
+            np.mean(paired_mse_deltas)
+        )
+
+        paired_mae_delta_mean = float(
+            np.mean(paired_mae_deltas)
+        )
+
+        # -------------------------------------------------------------
+        # Print summary
+        # -------------------------------------------------------------
+
+        print('\n' + '=' * 95)
+        print('PAIRED RANK ABLATION RESULTS')
+        print('=' * 95)
+
+        print(
+            f'Full: '
+            f'MSE={full_mse:.10f}, '
+            f'MAE={full_mae:.10f}'
+        )
+
+        print(
+            f'Global-R{global_rank}: '
+            f'MSE={global_mse:.10f}, '
+            f'MAE={global_mae:.10f}, '
+            f'MSE gap={global_mse_gap:+.4f}%, '
+            f'MAE gap={global_mae_gap:+.4f}%'
+        )
+
+        print(
+            f'LayerWise-{layer_rank_values}: '
+            f'MSE={layerwise_mse:.10f}, '
+            f'MAE={layerwise_mae:.10f}, '
+            f'MSE gap={layerwise_mse_gap:+.4f}%, '
+            f'MAE gap={layerwise_mae_gap:+.4f}%'
+        )
+
+        print()
+
+        print(
+            'Layer-wise vs Global-Rank:'
+        )
+
+        print(
+            f'  MSE difference = '
+            f'{layerwise_minus_global_mse:+.10f}'
+        )
+
+        print(
+            f'  MSE relative = '
+            f'{layerwise_vs_global_mse_percent:+.4f}%'
+        )
+
+        print(
+            f'  MAE difference = '
+            f'{layerwise_minus_global_mae:+.10f}'
+        )
+
+        print(
+            f'  MAE relative = '
+            f'{layerwise_vs_global_mae_percent:+.4f}%'
+        )
+
+        print(
+            f'  Mean paired MSE delta = '
+            f'{paired_mse_delta_mean:+.10f}'
+        )
+
+        print(
+            f'  Mean paired MAE delta = '
+            f'{paired_mae_delta_mean:+.10f}'
+        )
+
+        print('=' * 95)
+
+        # -------------------------------------------------------------
+        # Save files
+        # -------------------------------------------------------------
+
+        save_dir = './rank_diagnostic'
+
+        os.makedirs(
+            save_dir,
+            exist_ok=True
+        )
+
+        rank_string = '_'.join(
+            str(x)
+            for x in layer_rank_values
+        )
+
+        base_name = (
+            f'{self.args.data}_{flag}'
+            f'_paired_g{global_rank}'
+            f'_lw_{rank_string}'
+            f'_b{max_batches}'
+        )
+
+        paired_csv_path = os.path.join(
+            save_dir,
+            f'{base_name}.csv'
+        )
+
+        with open(
+                paired_csv_path,
+                'w',
+                newline=''
+        ) as f:
+
+            fieldnames = [
+                'batch',
+                'full_mse',
+                'global_mse',
+                'layerwise_mse',
+                'global_mse_gap_percent',
+                'layerwise_mse_gap_percent',
+                'full_mae',
+                'global_mae',
+                'layerwise_mae',
+                'global_mae_gap_percent',
+                'layerwise_mae_gap_percent'
+            ]
+
+            writer = csv.DictWriter(
+                f,
+                fieldnames=fieldnames
+            )
+
+            writer.writeheader()
+
+            writer.writerows(
+                paired_rows
+            )
+
+        # -------------------------------------------------------------
+        # Summary JSON
+        # -------------------------------------------------------------
+
+        json_path = os.path.join(
+            save_dir,
+            f'{base_name}.json'
+        )
+
+        summary = {
+            'dataset': self.args.data,
+            'split': flag,
+            'batches': len(paired_rows),
+            'samples_per_batch': 1,
+            'global_rank': global_rank,
+            'global_rank_budget': global_rank * num_layers,
+            'layer_ranks': layer_rank_values,
+            'layerwise_rank_budget': sum(layer_rank_values),
+            'full_mse': full_mse,
+            'global_mse': global_mse,
+            'layerwise_mse': layerwise_mse,
+            'global_mse_gap_percent_vs_full': global_mse_gap,
+            'layerwise_mse_gap_percent_vs_full': layerwise_mse_gap,
+            'full_mae': full_mae,
+            'global_mae': global_mae,
+            'layerwise_mae': layerwise_mae,
+            'global_mae_gap_percent_vs_full': global_mae_gap,
+            'layerwise_mae_gap_percent_vs_full': layerwise_mae_gap,
+            'layerwise_minus_global_mse': layerwise_minus_global_mse,
+            'layerwise_vs_global_mse_percent': layerwise_vs_global_mse_percent,
+            'layerwise_minus_global_mae': layerwise_minus_global_mae,
+            'layerwise_vs_global_mae_percent': layerwise_vs_global_mae_percent,
+            'mean_paired_mse_delta': paired_mse_delta_mean,
+            'mean_paired_mae_delta': paired_mae_delta_mean,
+            'note': (
+                'All three conditions were evaluated on the exact same '
+                'validation windows within each batch.'
+            )
+        }
+
+        with open(
+                json_path,
+                'w'
+        ) as f:
+
+            json.dump(
+                summary,
+                f,
+                indent=2
+            )
+
+        # -------------------------------------------------------------
+        # Decision file
+        # -------------------------------------------------------------
+
+        decision_path = os.path.join(
+            save_dir,
+            f'{base_name}_DECISION.txt'
+        )
+
+        with open(
+                decision_path,
+                'w'
+        ) as f:
+
+            f.write(
+                'PAIRED GLOBAL-RANK VS LAYER-WISE ABLATION\n'
+            )
+
+            f.write(
+                '=========================================\n\n'
+            )
+
+            f.write(
+                f'Split: {flag}\n'
+            )
+
+            f.write(
+                f'Batches: {len(paired_rows)}\n'
+            )
+
+            f.write(
+                'Samples per batch: 1\n\n'
+            )
+
+            f.write(
+                f'Global rank: {global_rank}\n'
+            )
+
+            f.write(
+                f'Global rank budget: '
+                f'{global_rank * num_layers}\n'
+            )
+
+            f.write(
+                f'Layer-wise ranks: '
+                f'{layer_rank_values}\n'
+            )
+
+            f.write(
+                f'Layer-wise rank budget: '
+                f'{sum(layer_rank_values)}\n\n'
+            )
+
+            f.write(
+                f'Full MSE: {full_mse:.10f}\n'
+            )
+
+            f.write(
+                f'Global-R{global_rank} MSE: '
+                f'{global_mse:.10f}\n'
+            )
+
+            f.write(
+                f'Layer-wise MSE: '
+                f'{layerwise_mse:.10f}\n\n'
+            )
+
+            f.write(
+                f'Global MSE gap vs Full: '
+                f'{global_mse_gap:+.6f}%\n'
+            )
+
+            f.write(
+                f'Layer-wise MSE gap vs Full: '
+                f'{layerwise_mse_gap:+.6f}%\n\n'
+            )
+
+            f.write(
+                f'Layer-wise vs Global MSE difference: '
+                f'{layerwise_minus_global_mse:+.10f}\n'
+            )
+
+            f.write(
+                f'Layer-wise vs Global MSE relative: '
+                f'{layerwise_vs_global_mse_percent:+.6f}%\n\n'
+            )
+
+            f.write(
+                f'Full MAE: {full_mae:.10f}\n'
+            )
+
+            f.write(
+                f'Global-R{global_rank} MAE: '
+                f'{global_mae:.10f}\n'
+            )
+
+            f.write(
+                f'Layer-wise MAE: '
+                f'{layerwise_mae:.10f}\n\n'
+            )
+
+            f.write(
+                f'Global MAE gap vs Full: '
+                f'{global_mae_gap:+.6f}%\n'
+            )
+
+            f.write(
+                f'Layer-wise MAE gap vs Full: '
+                f'{layerwise_mae_gap:+.6f}%\n\n'
+            )
+
+            f.write(
+                f'Layer-wise vs Global MAE difference: '
+                f'{layerwise_minus_global_mae:+.10f}\n'
+            )
+
+            f.write(
+                f'Layer-wise vs Global MAE relative: '
+                f'{layerwise_vs_global_mae_percent:+.6f}%\n\n'
+            )
+
+            f.write(
+                'NOTE:\n'
+            )
+
+            f.write(
+                'This is a paired functional ablation. '
+                'The same validation windows are used for Full, '
+                'Global-Rank, and Layer-wise conditions. '
+                'It does not measure runtime or memory benefits '
+                'of a true efficient low-rank implementation.\n'
+            )
+
+        print()
+        print('Saved:')
+        print(paired_csv_path)
+        print(json_path)
+        print(decision_path)
+
+    def rank_ablation_paired_headwise(
+            self,
+            flag='val',
+            max_batches=16,
+            global_rank=8,
+            attention_summary_csv=(
+                    './rank_diagnostic/'
+                    'custom_val_attention_summary_b32.csv'
+            )
+    ):
+        """
+        Paired functional comparison on exactly the same windows:
+
+            1) Full attention
+            2) Global-R8
+            3) Head-wise rank allocation
+
+        The head-wise allocation is derived from the previously
+        computed per-head r95 values in attention_summary_csv.
+
+        The total head-wise rank budget is forced to equal:
+
+            num_layers * num_heads * global_rank
+
+        For the current Traffic setup:
+
+            4 * 8 * 8 = 256
+
+        IMPORTANT:
+        This is a functional/oracle ablation.
+
+        The implementation still computes:
+
+            full attention matrix
+            full SVD
+
+        Therefore it does NOT measure the runtime/memory benefit
+        of a true low-rank attention implementation.
+        """
+
+        # =============================================================
+        # Helpers
+        # =============================================================
+
+        def _find_column(
+                dataframe,
+                candidates
+        ):
+
+            normalized = {
+                str(column).strip().lower(): column
+                for column in dataframe.columns
+            }
+
+            for candidate in candidates:
+
+                key = candidate.strip().lower()
+
+                if key in normalized:
+                    return normalized[key]
+
+            # Fuzzy fallback
+            for column in dataframe.columns:
+
+                normalized_column = (
+                    str(column)
+                    .strip()
+                    .lower()
+                    .replace('_', '')
+                    .replace('-', '')
+                    .replace(' ', '')
+                )
+
+                for candidate in candidates:
+
+                    normalized_candidate = (
+                        candidate
+                        .strip()
+                        .lower()
+                        .replace('_', '')
+                        .replace('-', '')
+                        .replace(' ', '')
+                    )
+
+                    if normalized_column == normalized_candidate:
+                        return column
+
+            return None
+
+        def _parse_index(value):
+
+            if isinstance(
+                    value,
+                    (int, np.integer)
+            ):
+                return int(value)
+
+            if isinstance(
+                    value,
+                    (float, np.floating)
+            ):
+                return int(value)
+
+            text_value = str(
+                value
+            ).strip()
+
+            # Examples:
+            # L1 -> 1
+            # Layer2 -> 2
+            # H3 -> 3
+            # Head8 -> 8
+
+            digits = ''.join(
+                character
+                for character in text_value
+                if character.isdigit()
+            )
+
+            if not digits:
+                raise ValueError(
+                    f'Cannot parse layer/head index from: '
+                    f'{value}'
+                )
+
+            return int(digits)
+
+        def _allocate_integer_budget(
+                weights,
+                budget,
+                min_rank=1
+        ):
+            """
+            Convert positive continuous weights into integer ranks
+            with an exact total budget.
+
+            Uses proportional allocation + largest remainder.
+
+            Returns:
+                np.ndarray[int]
+            """
+
+            weights = np.asarray(
+                weights,
+                dtype=np.float64
+            )
+
+            if np.any(
+                    ~np.isfinite(weights)
+            ):
+                raise ValueError(
+                    'Non-finite values found in rank weights.'
+                )
+
+            if np.any(
+                    weights <= 0
+            ):
+                raise ValueError(
+                    f'Rank weights must be > 0. '
+                    f'Got: {weights.tolist()}'
+                )
+
+            num_items = len(
+                weights
+            )
+
+            if budget < (
+                    num_items * min_rank
+            ):
+                raise ValueError(
+                    f'Budget {budget} is too small for '
+                    f'{num_items} items with min_rank={min_rank}.'
+                )
+
+            ideal = (
+                    weights
+                    / weights.sum()
+                    * budget
+            )
+
+            ranks = np.floor(
+                ideal
+            ).astype(
+                np.int64
+            )
+
+            ranks = np.maximum(
+                ranks,
+                min_rank
+            )
+
+            current_sum = int(
+                ranks.sum()
+            )
+
+            # ---------------------------------------------------------
+            # Add remaining units
+            # ---------------------------------------------------------
+
+            while current_sum < budget:
+
+                fractions = (
+                        ideal - ranks
+                )
+
+                order = np.argsort(
+                    -fractions
+                )
+
+                changed = False
+
+                for idx in order:
+
+                    if current_sum >= budget:
+                        break
+
+                    ranks[idx] += 1
+                    current_sum += 1
+                    changed = True
+
+                if not changed:
+                    break
+
+            # ---------------------------------------------------------
+            # Remove excess units if minimum-rank protection caused it.
+            # ---------------------------------------------------------
+
+            while current_sum > budget:
+
+                candidates = np.where(
+                    ranks > min_rank
+                )[0]
+
+                if len(candidates) == 0:
+                    raise RuntimeError(
+                        'Unable to satisfy exact rank budget.'
+                    )
+
+                # Remove first from the rank with the smallest
+                # fractional remainder.
+                deficits = (
+                        ranks[candidates]
+                        - ideal[candidates]
+                )
+
+                order = candidates[
+                    np.argsort(
+                        -deficits
+                    )
+                ]
+
+                changed = False
+
+                for idx in order:
+
+                    if current_sum <= budget:
+                        break
+
+                    if ranks[idx] > min_rank:
+                        ranks[idx] -= 1
+                        current_sum -= 1
+                        changed = True
+
+                if not changed:
+                    raise RuntimeError(
+                        'Unable to reduce rank allocation.'
+                    )
+
+            return ranks.astype(
+                np.int64
+            )
+
+        # =============================================================
+        # Basic model information
+        # =============================================================
+
+        model = (
+            self.model.module
+            if hasattr(
+                self.model,
+                'module'
+            )
+            else self.model
+        )
+
+        num_layers = len(
+            model.encoder.attn_layers
+        )
+
+        num_heads = int(
+            self.args.n_heads
+        )
+
+        total_budget = (
+                num_layers
+                * num_heads
+                * global_rank
+        )
+
+        # =============================================================
+        # Load attention summary CSV
+        # =============================================================
+
+        if not os.path.exists(
+                attention_summary_csv
+        ):
+            raise FileNotFoundError(
+                'Attention summary CSV not found:\n'
+                f'{attention_summary_csv}'
+            )
+
+        summary_df = pd.read_csv(
+            attention_summary_csv
+        )
+
+        # -------------------------------------------------------------
+        # Find columns
+        # -------------------------------------------------------------
+
+        layer_column = _find_column(
+            summary_df,
+            [
+                'layer',
+                'layer_id',
+                'layer_idx'
+            ]
+        )
+
+        head_column = _find_column(
+            summary_df,
+            [
+                'head',
+                'head_id',
+                'head_idx'
+            ]
+        )
+
+        r95_column = _find_column(
+            summary_df,
+            [
+                'r95',
+                'rank95',
+                'rank_95',
+                'r_95',
+                'r95_rank',
+                'effective_rank_95'
+            ]
+        )
+
+        if layer_column is None:
+            raise ValueError(
+                'Could not find a layer column in:\n'
+                f'{summary_df.columns.tolist()}'
+            )
+
+        if head_column is None:
+            raise ValueError(
+                'Could not find a head column in:\n'
+                f'{summary_df.columns.tolist()}'
+            )
+
+        if r95_column is None:
+            raise ValueError(
+                'Could not find an r95 column in:\n'
+                f'{summary_df.columns.tolist()}'
+            )
+
+        # =============================================================
+        # Build lookup
+        # =============================================================
+
+        head_weight_lookup = {}
+
+        for _, row in summary_df.iterrows():
+            layer_id = _parse_index(
+                row[layer_column]
+            )
+
+            head_id = _parse_index(
+                row[head_column]
+            )
+
+            r95_value = float(
+                row[r95_column]
+            )
+
+            head_weight_lookup[
+                (layer_id, head_id)
+            ] = r95_value
+
+        # -------------------------------------------------------------
+        # Detect 1-based indexing
+        # -------------------------------------------------------------
+
+        layer_ids = [
+            key[0]
+            for key in head_weight_lookup
+        ]
+
+        head_ids = [
+            key[1]
+            for key in head_weight_lookup
+        ]
+
+        if (
+                min(layer_ids) >= 1
+                and max(layer_ids) <= num_layers
+        ):
+
+            layer_offset = 1
+
+        else:
+
+            layer_offset = 0
+
+        if (
+                min(head_ids) >= 1
+                and max(head_ids) <= num_heads
+        ):
+
+            head_offset = 1
+
+        else:
+
+            head_offset = 0
+
+        # =============================================================
+        # Create ordered weight matrix
+        # =============================================================
+
+        weight_matrix = np.zeros(
+            (
+                num_layers,
+                num_heads
+            ),
+            dtype=np.float64
+        )
+
+        for layer_idx in range(
+                num_layers
+        ):
+
+            for head_idx in range(
+                    num_heads
+            ):
+
+                source_key = (
+                    layer_idx + layer_offset,
+                    head_idx + head_offset
+                )
+
+                if source_key not in head_weight_lookup:
+                    raise ValueError(
+                        'Missing r95 entry for '
+                        f'layer={layer_idx + 1}, '
+                        f'head={head_idx + 1}'
+                    )
+
+                weight_matrix[
+                    layer_idx,
+                    head_idx
+                ] = head_weight_lookup[
+                    source_key
+                ]
+
+        # =============================================================
+        # Convert all 32 r95 values into an exact 256-unit budget
+        # =============================================================
+
+        flat_weights = (
+            weight_matrix.reshape(-1)
+        )
+
+        flat_headwise_ranks = (
+            _allocate_integer_budget(
+                flat_weights,
+                total_budget,
+                min_rank=1
+            )
+        )
+
+        headwise_rank_matrix = (
+            flat_headwise_ranks.reshape(
+                num_layers,
+                num_heads
+            )
+        )
+
+        # =============================================================
+        # Console header
+        # =============================================================
+
+        print('\n' + '=' * 100)
+        print('PAIRED GLOBAL-RANK VS HEAD-WISE RANK ABLATION')
+        print('=' * 100)
+
+        print(
+            'Split:',
+            flag
+        )
+
+        print(
+            'Batches:',
+            max_batches
+        )
+
+        print(
+            'Samples per batch: 1'
+        )
+
+        print(
+            'Global rank:',
+            global_rank
+        )
+
+        print(
+            'Number of layers:',
+            num_layers
+        )
+
+        print(
+            'Number of heads:',
+            num_heads
+        )
+
+        print(
+            'Global rank budget:',
+            total_budget
+        )
+
+        print(
+            'Head-wise rank budget:',
+            int(
+                headwise_rank_matrix.sum()
+            )
+        )
+
+        print(
+            'Source CSV:',
+            attention_summary_csv
+        )
+
+        print(
+            'r95 column:',
+            r95_column
+        )
+
+        print('\nHead-wise rank allocation:')
+
+        for layer_idx in range(
+                num_layers
+        ):
+            print(
+                f'Layer {layer_idx + 1}: '
+                f'{headwise_rank_matrix[layer_idx].tolist()}'
+            )
+
+        print(
+            '\nTotal head-wise budget:',
+            int(
+                headwise_rank_matrix.sum()
+            )
+        )
+
+        if int(
+                headwise_rank_matrix.sum()
+        ) != total_budget:
+            raise RuntimeError(
+                'Head-wise rank budget mismatch.'
+            )
+
+        print('=' * 100)
+
+        # =============================================================
+        # Data
+        # =============================================================
+
+        data_set, data_loader = self._get_data(
+            flag=flag
+        )
+
+        model.eval()
+
+        paired_rows = []
+
+        try:
+
+            with torch.no_grad():
+
+                for batch_idx, (
+                        batch_x,
+                        batch_y,
+                        batch_x_mark,
+                        batch_y_mark
+                ) in enumerate(data_loader):
+
+                    if batch_idx >= max_batches:
+                        break
+
+                    # -------------------------------------------------
+                    # Same exact sample/window for all 3 conditions
+                    # -------------------------------------------------
+
+                    batch_x = batch_x[
+                              :1
+                              ].float().to(
+                        self.device
+                    )
+
+                    batch_y = batch_y[
+                              :1
+                              ].float().to(
+                        self.device
+                    )
+
+                    if (
+                            'PEMS' in self.args.data
+                            or 'Solar' in self.args.data
+                    ):
+
+                        batch_x_mark = None
+                        batch_y_mark = None
+
+                    else:
+
+                        batch_x_mark = (
+                            batch_x_mark[
+                            :1
+                            ]
+                            .float()
+                            .to(
+                                self.device
+                            )
+                        )
+
+                        batch_y_mark = (
+                            batch_y_mark[
+                            :1
+                            ]
+                            .float()
+                            .to(
+                                self.device
+                            )
+                        )
+
+                    # -------------------------------------------------
+                    # Decoder input
+                    # -------------------------------------------------
+
+                    dec_inp = torch.zeros_like(
+                        batch_y[
+                        :,
+                        -self.args.pred_len:,
+                        :
+                        ]
+                    ).float()
+
+                    dec_inp = torch.cat(
+                        [
+                            batch_y[
+                            :,
+                            :self.args.label_len,
+                            :
+                            ],
+                            dec_inp
+                        ],
+                        dim=1
+                    ).float().to(
+                        self.device
+                    )
+
+                    # =================================================
+                    # Evaluation helper
+                    # =================================================
+
+                    def evaluate_current_configuration():
+
+                        outputs = self.model(
+                            batch_x,
+                            batch_x_mark,
+                            dec_inp,
+                            batch_y_mark
+                        )
+
+                        if self.args.output_attention:
+                            outputs = outputs[0]
+
+                        f_dim = (
+                            -1
+                            if self.args.features == 'MS'
+                            else 0
+                        )
+
+                        outputs = outputs[
+                                  :,
+                                  -self.args.pred_len:,
+                                  f_dim:
+                                  ]
+
+                        true = batch_y[
+                               :,
+                               -self.args.pred_len:,
+                               f_dim:
+                               ]
+
+                        mse = torch.mean(
+                            (outputs - true) ** 2
+                        ).item()
+
+                        mae = torch.mean(
+                            torch.abs(outputs - true)
+                        ).item()
+
+                        return mse, mae
+
+                    # =================================================
+                    # 1) FULL
+                    # =================================================
+
+                    model.set_rank_ablation(
+                        0
+                    )
+
+                    if batch_idx == 0:
+                        applied_full = [
+                            (
+                                layer
+                                .attention
+                                .inner_attention
+                                .rank_ablation
+                            )
+                            for layer in model.encoder.attn_layers
+                        ]
+
+                        print(
+                            '\nFULL applied ranks:',
+                            applied_full
+                        )
+
+                    full_mse, full_mae = (
+                        evaluate_current_configuration()
+                    )
+
+                    # =================================================
+                    # 2) GLOBAL R=8
+                    # =================================================
+
+                    model.set_rank_ablation(
+                        global_rank
+                    )
+
+                    if batch_idx == 0:
+                        applied_global = [
+                            int(
+                                layer
+                                .attention
+                                .inner_attention
+                                .rank_ablation
+                            )
+                            for layer in model.encoder.attn_layers
+                        ]
+
+                        print(
+                            'Global-R8 applied ranks:',
+                            applied_global
+                        )
+
+                    global_mse, global_mae = (
+                        evaluate_current_configuration()
+                    )
+
+                    # =================================================
+                    # 3) HEAD-WISE
+                    # =================================================
+
+                    model.set_rank_ablation(
+                        global_rank,
+                        head_ranks=[
+                            row.tolist()
+                            for row in headwise_rank_matrix
+                        ]
+                    )
+
+                    if batch_idx == 0:
+
+                        applied_headwise = [
+                            list(
+                                layer
+                                .attention
+                                .inner_attention
+                                .head_rank_ablation
+                            )
+                            for layer in model.encoder.attn_layers
+                        ]
+
+                        print(
+                            'HeadWise applied ranks:'
+                        )
+
+                        for layer_idx, ranks_for_layer in enumerate(
+                                applied_headwise
+                        ):
+                            print(
+                                f'  Layer {layer_idx + 1}: '
+                                f'{ranks_for_layer}'
+                            )
+
+                    headwise_mse, headwise_mae = (
+                        evaluate_current_configuration()
+                    )
+
+                    # =================================================
+                    # Paired gaps relative to SAME full window
+                    # =================================================
+
+                    global_mse_gap = (
+                            100.0
+                            * (
+                                    global_mse
+                                    - full_mse
+                            )
+                            / max(
+                        abs(full_mse),
+                        1e-12
+                    )
+                    )
+
+                    headwise_mse_gap = (
+                            100.0
+                            * (
+                                    headwise_mse
+                                    - full_mse
+                            )
+                            / max(
+                        abs(full_mse),
+                        1e-12
+                    )
+                    )
+
+                    global_mae_gap = (
+                            100.0
+                            * (
+                                    global_mae
+                                    - full_mae
+                            )
+                            / max(
+                        abs(full_mae),
+                        1e-12
+                    )
+                    )
+
+                    headwise_mae_gap = (
+                            100.0
+                            * (
+                                    headwise_mae
+                                    - full_mae
+                            )
+                            / max(
+                        abs(full_mae),
+                        1e-12
+                    )
+                    )
+
+                    headwise_minus_global_mse = (
+                            headwise_mse
+                            - global_mse
+                    )
+
+                    headwise_minus_global_mae = (
+                            headwise_mae
+                            - global_mae
+                    )
+
+                    row = {
+                        'batch': batch_idx + 1,
+
+                        'full_mse': full_mse,
+                        'global_mse': global_mse,
+                        'headwise_mse': headwise_mse,
+
+                        'global_mse_gap_percent': global_mse_gap,
+                        'headwise_mse_gap_percent': headwise_mse_gap,
+
+                        'full_mae': full_mae,
+                        'global_mae': global_mae,
+                        'headwise_mae': headwise_mae,
+
+                        'global_mae_gap_percent': global_mae_gap,
+                        'headwise_mae_gap_percent': headwise_mae_gap,
+
+                        'headwise_minus_global_mse':
+                            headwise_minus_global_mse,
+
+                        'headwise_minus_global_mae':
+                            headwise_minus_global_mae
+                    }
+
+                    paired_rows.append(
+                        row
+                    )
+
+                    # -------------------------------------------------
+                    # Restore full attention
+                    # -------------------------------------------------
+
+                    model.set_rank_ablation(
+                        0
+                    )
+
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                    print(
+                        f'Batch {batch_idx + 1}/{max_batches}: '
+                        f'Full={full_mse:.8f} | '
+                        f'Global-R{global_rank}='
+                        f'{global_mse:.8f} '
+                        f'({global_mse_gap:+.3f}%) | '
+                        f'HeadWise='
+                        f'{headwise_mse:.8f} '
+                        f'({headwise_mse_gap:+.3f}%)'
+                    )
+
+        finally:
+
+            model.set_rank_ablation(
+                0
+            )
+
+            model.eval()
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # =============================================================
+        # Validate collected results
+        # =============================================================
+
+        if not paired_rows:
+            raise RuntimeError(
+                'No paired head-wise results were collected.'
+            )
+
+        # =============================================================
+        # Aggregate
+        # =============================================================
+
+        full_mse = float(
+            np.mean([
+                row['full_mse']
+                for row in paired_rows
+            ])
+        )
+
+        global_mse = float(
+            np.mean([
+                row['global_mse']
+                for row in paired_rows
+            ])
+        )
+
+        headwise_mse = float(
+            np.mean([
+                row['headwise_mse']
+                for row in paired_rows
+            ])
+        )
+
+        full_mae = float(
+            np.mean([
+                row['full_mae']
+                for row in paired_rows
+            ])
+        )
+
+        global_mae = float(
+            np.mean([
+                row['global_mae']
+                for row in paired_rows
+            ])
+        )
+
+        headwise_mae = float(
+            np.mean([
+                row['headwise_mae']
+                for row in paired_rows
+            ])
+        )
+
+        global_mse_gap = float(
+            np.mean([
+                row['global_mse_gap_percent']
+                for row in paired_rows
+            ])
+        )
+
+        headwise_mse_gap = float(
+            np.mean([
+                row['headwise_mse_gap_percent']
+                for row in paired_rows
+            ])
+        )
+
+        global_mae_gap = float(
+            np.mean([
+                row['global_mae_gap_percent']
+                for row in paired_rows
+            ])
+        )
+
+        headwise_mae_gap = float(
+            np.mean([
+                row['headwise_mae_gap_percent']
+                for row in paired_rows
+            ])
+        )
+
+        headwise_minus_global_mse = (
+                headwise_mse
+                - global_mse
+        )
+
+        headwise_minus_global_mae = (
+                headwise_mae
+                - global_mae
+        )
+
+        headwise_vs_global_mse_percent = (
+                100.0
+                * headwise_minus_global_mse
+                / max(
+            abs(global_mse),
+            1e-12
+        )
+        )
+
+        headwise_vs_global_mae_percent = (
+                100.0
+                * headwise_minus_global_mae
+                / max(
+            abs(global_mae),
+            1e-12
+        )
+        )
+
+        paired_mse_deltas = [
+            row['headwise_minus_global_mse']
+            for row in paired_rows
+        ]
+
+        paired_mae_deltas = [
+            row['headwise_minus_global_mae']
+            for row in paired_rows
+        ]
+
+        mean_paired_mse_delta = float(
+            np.mean(
+                paired_mse_deltas
+            )
+        )
+
+        mean_paired_mae_delta = float(
+            np.mean(
+                paired_mae_deltas
+            )
+        )
+
+        headwise_mse_wins = sum(
+            1
+            for delta in paired_mse_deltas
+            if delta < 0
+        )
+
+        headwise_mse_losses = sum(
+            1
+            for delta in paired_mse_deltas
+            if delta > 0
+        )
+
+        headwise_mse_ties = sum(
+            1
+            for delta in paired_mse_deltas
+            if delta == 0
+        )
+
+        # =============================================================
+        # Print final result
+        # =============================================================
+
+        print('\n' + '=' * 100)
+        print('PAIRED HEAD-WISE RANK ABLATION RESULTS')
+        print('=' * 100)
+
+        print(
+            f'Full: '
+            f'MSE={full_mse:.10f}, '
+            f'MAE={full_mae:.10f}'
+        )
+
+        print(
+            f'Global-R{global_rank}: '
+            f'MSE={global_mse:.10f}, '
+            f'MAE={global_mae:.10f}, '
+            f'MSE gap={global_mse_gap:+.4f}%, '
+            f'MAE gap={global_mae_gap:+.4f}%'
+        )
+
+        print(
+            f'HeadWise: '
+            f'MSE={headwise_mse:.10f}, '
+            f'MAE={headwise_mae:.10f}, '
+            f'MSE gap={headwise_mse_gap:+.4f}%, '
+            f'MAE gap={headwise_mae_gap:+.4f}%'
+        )
+
+        print()
+
+        print(
+            'HeadWise vs Global-R8:'
+        )
+
+        print(
+            f'  MSE difference = '
+            f'{headwise_minus_global_mse:+.10f}'
+        )
+
+        print(
+            f'  MSE relative = '
+            f'{headwise_vs_global_mse_percent:+.4f}%'
+        )
+
+        print(
+            f'  MAE difference = '
+            f'{headwise_minus_global_mae:+.10f}'
+        )
+
+        print(
+            f'  MAE relative = '
+            f'{headwise_vs_global_mae_percent:+.4f}%'
+        )
+
+        print()
+
+        print(
+            'Paired MSE windows:'
+        )
+
+        print(
+            f'  HeadWise wins  : '
+            f'{headwise_mse_wins}'
+        )
+
+        print(
+            f'  HeadWise losses: '
+            f'{headwise_mse_losses}'
+        )
+
+        print(
+            f'  Ties           : '
+            f'{headwise_mse_ties}'
+        )
+
+        print(
+            f'  Mean paired MSE delta: '
+            f'{mean_paired_mse_delta:+.10f}'
+        )
+
+        print(
+            f'  Mean paired MAE delta: '
+            f'{mean_paired_mae_delta:+.10f}'
+        )
+
+        print('=' * 100)
+
+        # =============================================================
+        # Save
+        # =============================================================
+
+        save_dir = './rank_diagnostic'
+
+        os.makedirs(
+            save_dir,
+            exist_ok=True
+        )
+
+        schedule_string = '_'.join(
+            str(int(x))
+            for x in headwise_rank_matrix.reshape(-1)
+        )
+
+        base_name = (
+            f'{self.args.data}_{flag}'
+            f'_paired_g{global_rank}'
+            f'_headwise'
+            f'_b{max_batches}'
+        )
+
+        csv_path = os.path.join(
+            save_dir,
+            f'{base_name}.csv'
+        )
+
+        fieldnames = list(
+            paired_rows[0].keys()
+        )
+
+        with open(
+                csv_path,
+                'w',
+                newline=''
+        ) as f:
+
+            writer = csv.DictWriter(
+                f,
+                fieldnames=fieldnames
+            )
+
+            writer.writeheader()
+
+            writer.writerows(
+                paired_rows
+            )
+
+        # =============================================================
+        # Save JSON
+        # =============================================================
+
+        json_path = os.path.join(
+            save_dir,
+            f'{base_name}.json'
+        )
+
+        summary = {
+            'dataset': self.args.data,
+            'split': flag,
+            'batches': len(paired_rows),
+            'samples_per_batch': 1,
+
+            'global_rank': global_rank,
+            'global_rank_budget': total_budget,
+
+            'headwise_rank_budget': int(
+                headwise_rank_matrix.sum()
+            ),
+
+            'headwise_rank_matrix': (
+                headwise_rank_matrix.tolist()
+            ),
+
+            'r95_source_csv': (
+                attention_summary_csv
+            ),
+
+            'r95_column': r95_column,
+
+            'r95_weight_matrix': (
+                weight_matrix.tolist()
+            ),
+
+            'full_mse': full_mse,
+            'global_mse': global_mse,
+            'headwise_mse': headwise_mse,
+
+            'global_mse_gap_percent_vs_full':
+                global_mse_gap,
+
+            'headwise_mse_gap_percent_vs_full':
+                headwise_mse_gap,
+
+            'full_mae': full_mae,
+            'global_mae': global_mae,
+            'headwise_mae': headwise_mae,
+
+            'global_mae_gap_percent_vs_full':
+                global_mae_gap,
+
+            'headwise_mae_gap_percent_vs_full':
+                headwise_mae_gap,
+
+            'headwise_minus_global_mse':
+                headwise_minus_global_mse,
+
+            'headwise_vs_global_mse_percent':
+                headwise_vs_global_mse_percent,
+
+            'headwise_minus_global_mae':
+                headwise_minus_global_mae,
+
+            'headwise_vs_global_mae_percent':
+                headwise_vs_global_mae_percent,
+
+            'headwise_mse_wins':
+                headwise_mse_wins,
+
+            'headwise_mse_losses':
+                headwise_mse_losses,
+
+            'headwise_mse_ties':
+                headwise_mse_ties,
+
+            'mean_paired_mse_delta':
+                mean_paired_mse_delta,
+
+            'mean_paired_mae_delta':
+                mean_paired_mae_delta,
+
+            'note': (
+                'Full, Global-Rank, and Head-wise conditions '
+                'were evaluated on the exact same validation '
+                'windows. The Head-wise schedule is derived '
+                'from r95 weights and normalized to the exact '
+                'same total rank budget as Global-Rank.'
+            )
+        }
+
+        with open(
+                json_path,
+                'w'
+        ) as f:
+
+            json.dump(
+                summary,
+                f,
+                indent=2
+            )
+
+        # =============================================================
+        # Decision file
+        # =============================================================
+
+        decision_path = os.path.join(
+            save_dir,
+            f'{base_name}_DECISION.txt'
+        )
+
+        with open(
+                decision_path,
+                'w'
+        ) as f:
+
+            f.write(
+                'PAIRED GLOBAL-R8 VS HEAD-WISE RANK ABLATION\n'
+            )
+
+            f.write(
+                '============================================\n\n'
+            )
+
+            f.write(
+                f'Split: {flag}\n'
+            )
+
+            f.write(
+                f'Batches: {len(paired_rows)}\n'
+            )
+
+            f.write(
+                'Samples per batch: 1\n\n'
+            )
+
+            f.write(
+                f'Global rank: {global_rank}\n'
+            )
+
+            f.write(
+                f'Global rank budget: '
+                f'{total_budget}\n'
+            )
+
+            f.write(
+                f'Head-wise rank budget: '
+                f'{int(headwise_rank_matrix.sum())}\n\n'
+            )
+
+            f.write(
+                'Head-wise rank matrix:\n'
+            )
+
+            for layer_idx in range(
+                    num_layers
+            ):
+                f.write(
+                    f'Layer {layer_idx + 1}: '
+                    f'{headwise_rank_matrix[layer_idx].tolist()}\n'
+                )
+
+            f.write('\n')
+
+            f.write(
+                f'Full MSE: '
+                f'{full_mse:.10f}\n'
+            )
+
+            f.write(
+                f'Global-R8 MSE: '
+                f'{global_mse:.10f}\n'
+            )
+
+            f.write(
+                f'Head-wise MSE: '
+                f'{headwise_mse:.10f}\n\n'
+            )
+
+            f.write(
+                f'Global MSE gap vs Full: '
+                f'{global_mse_gap:+.6f}%\n'
+            )
+
+            f.write(
+                f'Head-wise MSE gap vs Full: '
+                f'{headwise_mse_gap:+.6f}%\n\n'
+            )
+
+            f.write(
+                f'Head-wise vs Global MSE difference: '
+                f'{headwise_minus_global_mse:+.10f}\n'
+            )
+
+            f.write(
+                f'Head-wise vs Global MSE relative: '
+                f'{headwise_vs_global_mse_percent:+.6f}%\n\n'
+            )
+
+            f.write(
+                f'Full MAE: '
+                f'{full_mae:.10f}\n'
+            )
+
+            f.write(
+                f'Global-R8 MAE: '
+                f'{global_mae:.10f}\n'
+            )
+
+            f.write(
+                f'Head-wise MAE: '
+                f'{headwise_mae:.10f}\n\n'
+            )
+
+            f.write(
+                f'Global MAE gap vs Full: '
+                f'{global_mae_gap:+.6f}%\n'
+            )
+
+            f.write(
+                f'Head-wise MAE gap vs Full: '
+                f'{headwise_mae_gap:+.6f}%\n\n'
+            )
+
+            f.write(
+                f'Head-wise MSE wins: '
+                f'{headwise_mse_wins}\n'
+            )
+
+            f.write(
+                f'Head-wise MSE losses: '
+                f'{headwise_mse_losses}\n'
+            )
+
+            f.write(
+                f'Head-wise MSE ties: '
+                f'{headwise_mse_ties}\n\n'
+            )
+
+            f.write(
+                'NOTE:\n'
+            )
+
+            f.write(
+                'This is a paired functional/oracle ablation. '
+                'The exact same validation windows are used for '
+                'Full, Global-R8, and Head-wise conditions. '
+                'The implementation still computes full attention '
+                'and full SVD, so runtime/memory improvement of a '
+                'true efficient low-rank implementation is NOT '
+                'measured here.\n'
+            )
+
+        print()
+        print('Saved:')
+        print(csv_path)
+        print(json_path)
         print(decision_path)

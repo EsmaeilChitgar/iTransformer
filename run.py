@@ -113,6 +113,23 @@ if __name__ == '__main__':
                         help='comma-separated rank for each encoder layer')
     parser.add_argument('--rank_ablation_tag', type=str, default='',
                         help='suffix for rank ablation result files')
+    parser.add_argument(
+        '--rank_ablation_paired',
+        action='store_true',
+        help='compare Full, Global-Rank, and Layer-wise rank on the same windows'
+    )
+    parser.add_argument(
+        '--rank_ablation_headwise',
+        action='store_true',
+        help='paired Full vs Global-Rank vs Head-wise rank ablation'
+    )
+
+    parser.add_argument(
+        '--rank_ablation_head_csv',
+        type=str,
+        default='./rank_diagnostic/custom_val_attention_summary_b32.csv',
+        help='CSV containing per-layer/head r95 values'
+    )
 
     args = parser.parse_args()
 
@@ -164,6 +181,32 @@ if __name__ == '__main__':
             )
 
             print('>>>>>>> rank diagnostic finished <<<<<<<<<<<<<<<<<<<<<<')
+
+        if args.rank_ablation_paired:
+            exp.rank_ablation_paired(
+                flag='val',
+                max_batches=args.rank_ablation_batches,
+                global_rank=8,
+                layer_ranks=args.rank_ablation_layer_ranks
+            )
+
+        if args.rank_ablation_headwise:
+            print(
+                '>>>>>>> start paired head-wise rank ablation '
+                '<<<<<<<<<<<<<<<<<<<<<<'
+            )
+
+            exp.rank_ablation_paired_headwise(
+                flag='val',
+                max_batches=args.rank_ablation_batches,
+                global_rank=8,
+                attention_summary_csv=args.rank_ablation_head_csv
+            )
+
+            print(
+                '>>>>>>> paired head-wise rank ablation finished '
+                '<<<<<<<<<<<<<<<<<<<<'
+            )
 
         if args.rank_ablation:
             print('>>>>>>> start rank ablation <<<<<<<<<<<<<<<<<<<<<<')
