@@ -107,6 +107,13 @@ if __name__ == '__main__':
     parser.add_argument('--rank_ablation_ranks', type=str, default='1,2,4,8,16,32',
                         help='comma-separated attention ranks')
 
+    parser.add_argument('--rank_ablation_layerwise', action='store_true',
+                        help='use layer-wise attention ranks during rank ablation')
+    parser.add_argument('--rank_ablation_layer_ranks', type=str, default='6,11,9,6',
+                        help='comma-separated rank for each encoder layer')
+    parser.add_argument('--rank_ablation_tag', type=str, default='',
+                        help='suffix for rank ablation result files')
+
     args = parser.parse_args()
 
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False

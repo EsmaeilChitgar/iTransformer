@@ -57,13 +57,13 @@ python -u run.py ^
   --num_workers 1 ^
   --rank_analysis_only ^
   --checkpoint_path "%CHECKPOINT%" ^
-  --rank_diagnostic ^
-  --rank_diagnostic_split val ^
-  --rank_diagnostic_batches 32 ^
-  --rank_diagnostic_samples 1 ^
   --rank_ablation ^
-  --rank_ablation_batches 4 ^
-  --rank_ablation_ranks "1,2,4,8,16,32"
+  --rank_ablation_batches 16 ^
+  --rank_ablation_samples 1 ^
+  --rank_ablation_ranks "8" ^
+  --rank_ablation_layerwise ^
+  --rank_ablation_layer_ranks "6,11,9,6" ^
+  --rank_ablation_tag "lw_6_11_9_6"
 
 if errorlevel 1 (
     echo.

@@ -29,6 +29,13 @@ class Model(nn.Module):
         self.diagnostic_samples = getattr(configs, 'rank_diagnostic_samples', 1)
         self.last_layer_outputs = []
         self.last_attentions = []
+        self.rank_ablation_layerwise = getattr(configs, 'rank_ablation_layerwise', False)
+
+        layer_rank_text = getattr(configs, 'rank_ablation_layer_ranks', '')
+        self.rank_ablation_layer_ranks = [
+            int(x.strip()) for x in layer_rank_text.split(',')
+            if x.strip()
+        ]
 
         # Encoder-only architecture
         self.encoder = Encoder(
@@ -67,18 +74,22 @@ class Model(nn.Module):
             if hasattr(inner_attention, 'capture_attention'):
                 inner_attention.capture_attention = enabled
 
-    def set_rank_ablation(self, rank=0):
-        """
-        Set the attention rank used for functional ablation.
+    def set_rank_ablation(self, rank=0, layer_ranks=None):
+        num_layers = len(self.encoder.attn_layers)
 
-        rank=0 means full attention.
-        rank>0 means truncated SVD attention.
-        """
-        for encoder_layer in self.encoder.attn_layers:
-            inner_attention = encoder_layer.attention.inner_attention
+        if layer_ranks is None and self.rank_ablation_layerwise:
+            layer_ranks = self.rank_ablation_layer_ranks
 
-            if hasattr(inner_attention, 'rank_ablation'):
-                inner_attention.rank_ablation = rank
+        if layer_ranks is None:
+            layer_ranks = [rank] * num_layers
+
+        if len(layer_ranks) != num_layers:
+            raise ValueError(
+                f'Expected {num_layers} layer ranks, got {len(layer_ranks)}: {layer_ranks}'
+            )
+
+        for i, layer in enumerate(self.encoder.attn_layers):
+            layer.attention.inner_attention.rank_ablation = int(layer_ranks[i])
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         if self.use_norm:

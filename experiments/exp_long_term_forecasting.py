@@ -1067,9 +1067,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         rank=0:
             original full attention.
 
-        rank>0:
+        rank>0 in global mode:
             replace each attention matrix with its truncated
             rank-r SVD approximation.
+
+        rank>0 in layer-wise mode:
+            replace each attention matrix with a truncated
+            SVD approximation using a different rank for each
+            encoder layer.
 
         This experiment measures forecasting sensitivity to
         attention rank. It is NOT a runtime benchmark because
@@ -1080,6 +1085,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             self.model,
             'module'
         ) else self.model
+
+        # -------------------------------------------------------------
+        # Rank configuration
+        # -------------------------------------------------------------
 
         rank_values = [0]
 
@@ -1098,14 +1107,154 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             list(set(rank_values))
         )
 
+        layerwise_enabled = getattr(
+            self.args,
+            'rank_ablation_layerwise',
+            False
+        )
+
+        layer_rank_values = []
+
+        if layerwise_enabled:
+
+            layer_rank_text = getattr(
+                self.args,
+                'rank_ablation_layer_ranks',
+                ''
+            )
+
+            if isinstance(
+                    layer_rank_text,
+                    str
+            ):
+
+                for value in layer_rank_text.split(','):
+
+                    value = value.strip()
+
+                    if value:
+                        layer_rank_values.append(
+                            int(value)
+                        )
+
+            else:
+
+                layer_rank_values = list(
+                    layer_rank_text
+                )
+
+            num_layers = len(
+                model.encoder.attn_layers
+            )
+
+            if len(layer_rank_values) != num_layers:
+                raise ValueError(
+                    f'Expected {num_layers} layer-wise ranks, '
+                    f'got {len(layer_rank_values)}: '
+                    f'{layer_rank_values}'
+                )
+
+            for layer_rank in layer_rank_values:
+
+                if layer_rank <= 0:
+                    raise ValueError(
+                        'Layer-wise ranks must be > 0. '
+                        f'Got: {layer_rank_values}'
+                    )
+
+        # -------------------------------------------------------------
+        # Output tag
+        # -------------------------------------------------------------
+
+        rank_ablation_tag = getattr(
+            self.args,
+            'rank_ablation_tag',
+            ''
+        )
+
+        rank_ablation_tag = (
+            str(
+                rank_ablation_tag
+            ).strip()
+        )
+
+        tag_suffix = (
+            f'_{rank_ablation_tag}'
+            if rank_ablation_tag
+            else ''
+        )
+
+        # -------------------------------------------------------------
+        # Console header
+        # -------------------------------------------------------------
+
         print('\n' + '=' * 90)
         print('FUNCTIONAL RANK ABLATION')
         print('=' * 90)
-        print('Split:', flag)
-        print('Batches:', max_batches)
-        print('Ranks:', rank_values)
-        print('Samples per batch: 1')
+
+        print(
+            'Split:',
+            flag
+        )
+
+        print(
+            'Batches:',
+            max_batches
+        )
+
+        print(
+            'Ranks:',
+            rank_values
+        )
+
+        print(
+            'Samples per batch: 1'
+        )
+
+        print(
+            'Layer-wise mode:',
+            layerwise_enabled
+        )
+
+        if layerwise_enabled:
+
+            print(
+                'Layer-wise ranks:',
+                layer_rank_values
+            )
+
+            print(
+                'Total layer-rank budget:',
+                sum(
+                    layer_rank_values
+                )
+            )
+
+            print(
+                'Total head-rank budget:',
+                sum(
+                    layer_rank_values
+                ) * self.args.n_heads
+            )
+
+        else:
+
+            print(
+                'Global rank mode: '
+                'same rank for every layer/head'
+            )
+
+        if rank_ablation_tag:
+            print(
+                'Output tag:',
+                rank_ablation_tag
+            )
+
         print('=' * 90)
+
+        # -------------------------------------------------------------
+        # Data
+        # -------------------------------------------------------------
 
         data_set, data_loader = self._get_data(
             flag=flag
@@ -1154,9 +1303,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             'PEMS' in self.args.data
                             or 'Solar' in self.args.data
                     ):
+
                         batch_x_mark = None
                         batch_y_mark = None
+
                     else:
+
                         batch_x_mark = (
                             batch_x_mark[:1]
                             .float()
@@ -1199,9 +1351,36 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                     for rank in rank_values:
 
-                        model.set_rank_ablation(
-                            rank
-                        )
+                        # -------------------------------------------------
+                        # Full attention
+                        # -------------------------------------------------
+
+                        if rank == 0:
+
+                            model.set_rank_ablation(
+                                0
+                            )
+
+                        # -------------------------------------------------
+                        # Layer-wise rank ablation
+                        # -------------------------------------------------
+
+                        elif layerwise_enabled:
+
+                            model.set_rank_ablation(
+                                rank,
+                                layer_ranks=layer_rank_values
+                            )
+
+                        # -------------------------------------------------
+                        # Global rank ablation
+                        # -------------------------------------------------
+
+                        else:
+
+                            model.set_rank_ablation(
+                                rank
+                            )
 
                         outputs = self.model(
                             batch_x,
@@ -1210,8 +1389,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             batch_y_mark
                         )
 
-                        # In the current configuration output_attention
-                        # is False, but keep this for compatibility.
+                        # -------------------------------------------------
+                        # Compatibility with output_attention=True
+                        # -------------------------------------------------
+
                         if self.args.output_attention:
                             outputs = outputs[0]
 
@@ -1257,8 +1438,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                             )
                         )
 
+                    # -------------------------------------------------
                     # Always restore full attention after each batch.
-                    model.set_rank_ablation(0)
+                    # -------------------------------------------------
+
+                    model.set_rank_ablation(
+                        0
+                    )
 
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
@@ -1270,8 +1456,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         finally:
 
+            # ---------------------------------------------------------
             # Always leave the model in normal full-attention mode.
-            model.set_rank_ablation(0)
+            # ---------------------------------------------------------
+
+            model.set_rank_ablation(
+                0
+            )
+
             model.eval()
 
             if torch.cuda.is_available():
@@ -1341,7 +1533,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 )
             }
 
-            rows.append(row)
+            rows.append(
+                row
+            )
 
             print(
                 f'Rank {rank:>3}: '
@@ -1393,7 +1587,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 'WEAK_FUNCTIONAL_LOW_RANK_EVIDENCE'
             )
 
+        # -------------------------------------------------------------
         # Smallest rank within 1% and 3%.
+        # -------------------------------------------------------------
+
         smallest_rank_1 = (
             min(within_1_percent)
             if within_1_percent
@@ -1419,6 +1616,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         suffix = (
             f'_ablation_b{max_batches}'
+            f'{tag_suffix}'
         )
 
         csv_path = os.path.join(
@@ -1447,7 +1645,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             )
 
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows(
+                rows
+            )
 
         # -------------------------------------------------------------
         # Save JSON
@@ -1464,6 +1664,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             'batches': max_batches,
             'samples_per_batch': 1,
             'ranks': rank_values,
+            'layerwise_enabled': layerwise_enabled,
+            'layer_ranks': (
+                layer_rank_values
+                if layerwise_enabled
+                else None
+            ),
             'full_mse': full_mse,
             'full_mae': full_mae,
             'within_1_percent_ranks': within_1_percent,
@@ -1505,6 +1711,41 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             f.write(
                 '=======================\n\n'
             )
+
+            f.write(
+                f'Split: {flag}\n'
+            )
+
+            f.write(
+                f'Batches: {max_batches}\n'
+            )
+
+            f.write(
+                'Samples per batch: 1\n'
+            )
+
+            f.write(
+                f'Layer-wise mode: '
+                f'{layerwise_enabled}\n'
+            )
+
+            if layerwise_enabled:
+                f.write(
+                    f'Layer-wise ranks: '
+                    f'{layer_rank_values}\n'
+                )
+
+                f.write(
+                    f'Total layer-rank budget: '
+                    f'{sum(layer_rank_values)}\n'
+                )
+
+                f.write(
+                    f'Total head-rank budget: '
+                    f'{sum(layer_rank_values) * self.args.n_heads}\n'
+                )
+
+            f.write('\n')
 
             f.write(
                 f'Full-attention subset MSE: '
