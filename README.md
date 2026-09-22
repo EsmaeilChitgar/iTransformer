@@ -180,6 +180,10 @@ python tests/benchmark_variate_attention.py --device cuda --tokens 866 \
 End-to-end model latency must still be measured separately because embedding,
 feed-forward layers, and data transfer limit the attainable model speedup.
 
+On Windows, `scripts\traffic.bat` runs the Traffic 96-to-96 checkpoint screen,
+paired confirmation, and FP32/FP16 CUDA kernel benchmarks, then lists the
+result directory to return for review.
+
 ## Citation
 
 If you find this repo helpful, please cite our paper. 
