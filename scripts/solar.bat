@@ -12,8 +12,8 @@ if errorlevel 1 (
 set "CUDA_VISIBLE_DEVICES=0"
 set "PYTHON=python"
 
-set "DATA_ROOT=./dataset/electricity/"
-set "DATA_FILE=electricity.csv"
+set "DATA_ROOT=./dataset/Solar/"
+set "DATA_FILE=solar_AL.csv"
 
 if not exist "%DATA_ROOT%%DATA_FILE%" (
     echo ERROR: Dataset not found:
@@ -34,26 +34,25 @@ set "BATCH_EXIT_CODE=0"
 
 REM ==========================================================
 REM Experiment 1
-REM ECL 96-to-336, Induced Attention R64, From Scratch
+REM Solar 96-to-96, Induced Attention R64, From Scratch
 REM ==========================================================
 
-
-call :EXP_START "ecl_96_336_induced_r64_scratch_seed2023"
+call :EXP_START "solar_96_96_induced_r64_scratch_seed2023"
 
 call "%PYTHON%" -u run.py ^
  --is_training 1 ^
- --model_id ecl_96_336_induced_r64_scratch_seed2023 ^
+ --model_id solar_96_96_induced_r64_scratch_seed2023 ^
  --model iTransformer ^
  --root_path "%DATA_ROOT%" ^
  --data_path "%DATA_FILE%" ^
- --data custom ^
+ --data Solar ^
  --features M ^
  --seq_len 96 ^
- --pred_len 336 ^
- --e_layers 3 ^
- --enc_in 321 ^
- --dec_in 321 ^
- --c_out 321 ^
+ --pred_len 96 ^
+ --e_layers 2 ^
+ --enc_in 137 ^
+ --dec_in 137 ^
+ --c_out 137 ^
  --des Exp ^
  --d_model 512 ^
  --d_ff 512 ^
