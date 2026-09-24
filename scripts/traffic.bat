@@ -37,11 +37,11 @@ REM Experiment 1
 REM Traffic 96-to-96, Induced Attention R64, From Scratch
 REM ==========================================================
 
-call :EXP_START "traffic_96_96_induced_r64_scratch_seed2023"
+call :EXP_START "traffic_96_96_induced_r64_scratch_seed2024"
 
 call "%PYTHON%" -u run.py ^
  --is_training 1 ^
- --model_id traffic_96_96_induced_r64_scratch_seed2023 ^
+ --model_id traffic_96_96_induced_r64_scratch_seed2024 ^
  --model iTransformer ^
  --root_path "%DATA_ROOT%" ^
  --data_path "%DATA_FILE%" ^
@@ -58,7 +58,7 @@ call "%PYTHON%" -u run.py ^
  --d_ff 512 ^
  --batch_size 16 ^
  --learning_rate 0.001 ^
- --num_workers 1 ^
+ --num_workers 4 ^
  --itr 1 ^
  --induced_attention ^
  --attn_rank 64 ^

@@ -13,7 +13,7 @@ set "CUDA_VISIBLE_DEVICES=0"
 set "PYTHON=python"
 
 set "DATA_ROOT=./dataset/Solar/"
-set "DATA_FILE=solar_AL.csv"
+set "DATA_FILE=solar_AL.txt"
 
 if not exist "%DATA_ROOT%%DATA_FILE%" (
     echo ERROR: Dataset not found:
@@ -58,7 +58,7 @@ call "%PYTHON%" -u run.py ^
  --d_ff 512 ^
  --batch_size 16 ^
  --learning_rate 0.0005 ^
- --num_workers 1 ^
+ --num_workers 0 ^
  --itr 1 ^
  --induced_attention ^
  --attn_rank 64 ^

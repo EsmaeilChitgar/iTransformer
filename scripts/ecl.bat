@@ -59,7 +59,7 @@ call "%PYTHON%" -u run.py ^
  --d_ff 512 ^
  --batch_size 16 ^
  --learning_rate 0.0005 ^
- --num_workers 1 ^
+ --num_workers 0 ^
  --itr 1 ^
  --induced_attention ^
  --attn_rank 64 ^
