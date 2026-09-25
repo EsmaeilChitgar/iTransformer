@@ -62,7 +62,7 @@ call "%PYTHON%" -u run.py ^
  --itr 1 ^
  --induced_attention ^
  --attn_rank 64 ^
- --attn_time_tokens 4 ^
+ --attn_time_tokens 0 ^
  --attn_gate_init 1.0
 
 if errorlevel 1 (

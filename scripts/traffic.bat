@@ -34,21 +34,21 @@ set "BATCH_EXIT_CODE=0"
 
 REM ==========================================================
 REM Experiment 1
-REM Traffic 96-to-96, Induced Attention R64, From Scratch
+REM Traffic 96-to-192, Induced Attention R64, From Scratch
 REM ==========================================================
 
-call :EXP_START "traffic_96_96_induced_r64_scratch_seed2024"
+call :EXP_START "traffic_96_192_induced_r64_scratch_seed2023"
 
 call "%PYTHON%" -u run.py ^
  --is_training 1 ^
- --model_id traffic_96_96_induced_r64_scratch_seed2024 ^
+ --model_id traffic_96_192_induced_r64_scratch_seed2023 ^
  --model iTransformer ^
  --root_path "%DATA_ROOT%" ^
  --data_path "%DATA_FILE%" ^
  --data custom ^
  --features M ^
  --seq_len 96 ^
- --pred_len 96 ^
+ --pred_len 192 ^
  --e_layers 4 ^
  --enc_in 862 ^
  --dec_in 862 ^
@@ -58,7 +58,7 @@ call "%PYTHON%" -u run.py ^
  --d_ff 512 ^
  --batch_size 16 ^
  --learning_rate 0.001 ^
- --num_workers 4 ^
+ --num_workers 0 ^
  --itr 1 ^
  --induced_attention ^
  --attn_rank 64 ^
@@ -72,88 +72,6 @@ if errorlevel 1 (
 ) else (
     call :EXP_END "COMPLETED"
 )
-
-REM ==========================================================
-REM Experiment 2
-REM Traffic 96-to-336, Induced Attention R64, From Scratch
-REM ==========================================================
-
-call :EXP_START "traffic_96_336_induced_r64_scratch_seed2023"
-
-call "%PYTHON%" -u run.py ^
- --is_training 1 ^
- --model_id traffic_96_336_induced_r64_scratch_seed2023 ^
- --model iTransformer ^
- --root_path "%DATA_ROOT%" ^
- --data_path "%DATA_FILE%" ^
- --data custom ^
- --features M ^
- --seq_len 96 ^
- --pred_len 336 ^
- --e_layers 4 ^
- --enc_in 862 ^
- --dec_in 862 ^
- --c_out 862 ^
- --des Exp ^
- --d_model 512 ^
- --d_ff 512 ^
- --batch_size 16 ^
- --learning_rate 0.001 ^
- --num_workers 1 ^
- --itr 1 ^
- --induced_attention ^
- --attn_rank 64 ^
- --attn_time_tokens 4 ^
- --attn_gate_init 1.0
-
-if errorlevel 1 (
-    set "BATCH_EXIT_CODE=1"
-    call :EXP_END "FAILED"
-    goto :ALL_DONE
-) else (
-    call :EXP_END "COMPLETED"
-)
-
-
-
-REM ==========================================================
-REM Experiment 3
-REM Traffic 96-to-96, Original Dense iTransformer Baseline
-REM Same codebase, DataLoader, seed and shared parameters
-REM ==========================================================
-
-call :EXP_START "traffic_96_96_baseline_dense_control_seed2023"
-
-call "%PYTHON%" -u run.py ^
- --is_training 1 ^
- --model_id traffic_96_96_baseline_dense_control_seed2023 ^
- --model iTransformer ^
- --root_path "%DATA_ROOT%" ^
- --data_path "%DATA_FILE%" ^
- --data custom ^
- --features M ^
- --seq_len 96 ^
- --pred_len 96 ^
- --e_layers 4 ^
- --enc_in 862 ^
- --dec_in 862 ^
- --c_out 862 ^
- --des Exp ^
- --d_model 512 ^
- --d_ff 512 ^
- --batch_size 16 ^
- --learning_rate 0.001 ^
- --num_workers 1 ^
- --itr 1
-
-if errorlevel 1 (
-    set "BATCH_EXIT_CODE=1"
-    call :EXP_END "FAILED"
-    goto :ALL_DONE
-) else (
-    call :EXP_END "COMPLETED"
-)
-
 
 
 REM ==========================================================

@@ -34,22 +34,67 @@ set "BATCH_EXIT_CODE=0"
 
 REM ==========================================================
 REM Experiment 1
-REM ECL 96-to-336, Induced Attention R64, From Scratch
+REM ECL 96-to-192, Induced Attention R64, From Scratch
 REM ==========================================================
 
 
-call :EXP_START "ecl_96_336_induced_r64_scratch_seed2023"
+call :EXP_START "ecl_96_192_induced_r64_scratch_seed2023"
 
 call "%PYTHON%" -u run.py ^
  --is_training 1 ^
- --model_id ecl_96_336_induced_r64_scratch_seed2023 ^
+ --model_id ecl_96_192_induced_r64_scratch_seed2023 ^
  --model iTransformer ^
  --root_path "%DATA_ROOT%" ^
  --data_path "%DATA_FILE%" ^
  --data custom ^
  --features M ^
  --seq_len 96 ^
- --pred_len 336 ^
+ --pred_len 192 ^
+ --e_layers 3 ^
+ --enc_in 321 ^
+ --dec_in 321 ^
+ --c_out 321 ^
+ --des Exp ^
+ --d_model 512 ^
+ --d_ff 512 ^
+ --batch_size 16 ^
+ --learning_rate 0.0005 ^
+ --num_workers 0 ^
+ --itr 1 ^
+ --induced_attention ^
+ --attn_rank 64 ^
+ --attn_time_tokens 4 ^
+ --attn_gate_init 1.0
+
+if errorlevel 1 (
+    set "BATCH_EXIT_CODE=1"
+    call :EXP_END "FAILED"
+    goto :ALL_DONE
+) else (
+    call :EXP_END "COMPLETED"
+)
+
+
+
+
+REM ==========================================================
+REM Experiment 2
+REM ECL 96-to-720, Induced Attention R64, From Scratch
+REM ==========================================================
+
+
+call :EXP_START "ecl_96_720_induced_r64_scratch_seed2023"
+
+call "%PYTHON%" -u run.py ^
+ --is_training 1 ^
+ --model_id ecl_96_720_induced_r64_scratch_seed2023 ^
+ --model iTransformer ^
+ --root_path "%DATA_ROOT%" ^
+ --data_path "%DATA_FILE%" ^
+ --data custom ^
+ --features M ^
+ --seq_len 96 ^
+ --pred_len 720 ^
  --e_layers 3 ^
  --enc_in 321 ^
  --dec_in 321 ^
