@@ -68,6 +68,12 @@ if __name__ == '__main__':
     parser.add_argument('--lradj', type=str, default='type1', help='adjust learning rate')
     parser.add_argument('--use_amp', action='store_true', help='use automatic mixed precision training', default=False)
 
+    # RSL: auxiliary objective during training only
+    parser.add_argument('--rsl_alpha', type=float, default=0.0,
+                        help='residual-subspace loss strength; zero uses original MSE path')
+    parser.add_argument('--rsl_variance_ratio', type=float, default=0.90,
+                        help='training-only PCA cumulative variance threshold')
+
     # GPU
     parser.add_argument('--use_gpu', type=bool, default=True, help='use gpu')
     parser.add_argument('--gpu', type=int, default=0, help='gpu')
@@ -96,6 +102,12 @@ if __name__ == '__main__':
         args.device_ids = [int(id_) for id_ in device_ids]
         args.gpu = args.device_ids[0]
 
+    if not 0.0 <= args.rsl_alpha or not np.isfinite(args.rsl_alpha):
+        raise ValueError('rsl_alpha must be finite and nonnegative')
+    if args.rsl_alpha and not 0.0 < args.rsl_variance_ratio < 1.0:
+        raise ValueError('rsl_variance_ratio must be between 0 and 1')
+    if args.rsl_alpha and args.features != 'M':
+        raise ValueError('Initial RSL experiment requires --features M')
     print('Args in experiment:')
     print(args)
 
@@ -103,7 +115,6 @@ if __name__ == '__main__':
         Exp = Exp_Long_Term_Forecast_Partial
     else: # MTSF: multivariate time series forecasting
         Exp = Exp_Long_Term_Forecast
-
 
     if args.is_training:
         for ii in range(args.itr):

@@ -1,4 +1,5 @@
 from data_provider.data_factory import data_provider
+from utils.rsl import training_basis, residual_loss
 from experiments.exp_basic import Exp_Basic
 from utils.tools import EarlyStopping, adjust_learning_rate, visual
 from utils.metrics import metric
@@ -95,6 +96,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
+        rsl_basis = None
+        if self.args.rsl_alpha > 0:
+            rsl_basis = training_basis(train_data, self.args.rsl_variance_ratio, self.device)
 
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
@@ -133,6 +137,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
                         batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                         loss = criterion(outputs, batch_y)
+                        if rsl_basis is not None:
+                            loss = loss + self.args.rsl_alpha * residual_loss(
+                                outputs, batch_y, rsl_basis)
                         train_loss.append(loss.item())
                 else:
                     if self.args.output_attention:
@@ -144,6 +151,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                     loss = criterion(outputs, batch_y)
+                    if rsl_basis is not None:
+                        loss = loss + self.args.rsl_alpha * residual_loss(
+                            outputs, batch_y, rsl_basis)
                     train_loss.append(loss.item())
 
                 if (i + 1) % 100 == 0:
