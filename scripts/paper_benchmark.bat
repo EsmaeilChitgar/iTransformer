@@ -35,8 +35,8 @@ echo ==========================================================
 (
   echo Run ID: %RUN_ID%
   echo Start: %BATCH_START%
-  git rev-parse HEAD 2^>nul
-  nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2^>nul
+  git rev-parse HEAD
+  nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
   call "%PYTHON%" -c "import torch; print('torch='+torch.__version__); print('cuda='+str(torch.version.cuda))"
 ) > "%OUTPUT_DIR%\RUN_INFO.txt" 2>&1
 
