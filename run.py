@@ -114,6 +114,16 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint_path', type=str, default='',
                         help='checkpoint used by --rank_analysis')
 
+    # Research baselines (do not confuse paper-reproduction adaptations with
+    # directly reported numbers from Set Transformer or Luna).
+    parser.add_argument('--compare_attention', type=str, default='auto',
+                        choices=['auto', 'dense', 'ilra', 'isab', 'isab_bypass',
+                                 'luna', 'luna_bypass'])
+    parser.add_argument('--comparison_time_tokens', type=int, default=4,
+                        help='time tokens for explicit bypass variants only; use 0 for PEMS')
+    parser.add_argument('--isab_layernorm', type=int, default=0, choices=[0, 1],
+                        help='official ISAB reference default is ln=False')
+
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
 
@@ -131,6 +141,15 @@ if __name__ == '__main__':
         raise ValueError('rank_analysis requires dense FullAttention')
     if args.rank_analysis and not args.checkpoint_path:
         raise ValueError('--checkpoint_path is required for rank_analysis')
+
+    if args.compare_attention != 'auto' and args.model != 'iTransformer':
+        raise ValueError('--compare_attention applies only to iTransformer')
+    if args.compare_attention != 'auto' and args.induced_attention:
+        raise ValueError('Do not combine --induced_attention with --compare_attention')
+    if args.comparison_time_tokens < 0:
+        raise ValueError('--comparison_time_tokens cannot be negative')
+    if args.rank_analysis and args.compare_attention not in ('auto', 'dense'):
+        raise ValueError('rank_analysis supports dense only')
 
     print('Args in experiment:')
     print(args)

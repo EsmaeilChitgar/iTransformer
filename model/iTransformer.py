@@ -5,6 +5,7 @@ from layers.Transformer_EncDec import Encoder, EncoderLayer
 from layers.SelfAttention_Family import (
     FullAttention, AttentionLayer, InducedVariateAttention
 )
+from layers.ILRA_Comparators import ISABEncoderLayer, LunaEncoder
 from layers.Embed import DataEmbedding_inverted
 import numpy as np
 
@@ -20,7 +21,10 @@ class Model(nn.Module):
         self.pred_len = configs.pred_len
         self.output_attention = configs.output_attention
         self.use_norm = configs.use_norm
-        self.induced_attention = getattr(configs, 'induced_attention', False)
+        self.compare_attention = getattr(configs, 'compare_attention', 'auto')
+        self.induced_attention = (getattr(configs, 'induced_attention', False)
+                                  or self.compare_attention == 'ilra')
+
         # Embedding
         self.enc_embedding = DataEmbedding_inverted(configs.seq_len, configs.d_model, configs.embed, configs.freq,
                                                     configs.dropout)
@@ -47,19 +51,45 @@ class Model(nn.Module):
             )
 
         # Encoder-only architecture
-        self.encoder = Encoder(
-            [
-                EncoderLayer(
-                    AttentionLayer(
-                        make_inner_attention(), configs.d_model, configs.n_heads),
-                    configs.d_model,
-                    configs.d_ff,
-                    dropout=configs.dropout,
-                    activation=configs.activation
-                ) for l in range(configs.e_layers)
-            ],
-            norm_layer=torch.nn.LayerNorm(configs.d_model)
-        )
+        # ISAB replaces each whole EncoderLayer with the *two official MAB*
+        # blocks. Luna uses its contextual P stream across all layers.
+        # Both retain the inverted embedding and forecasting projector.
+        if self.compare_attention in ('isab', 'isab_bypass'):
+            self.encoder = Encoder(
+                [ISABEncoderLayer(
+                    d_model=configs.d_model,
+                    n_heads=configs.n_heads,
+                    rank=configs.attn_rank,
+                    layernorm=bool(configs.isab_layernorm),
+                    time_tokens=configs.comparison_time_tokens,
+                    bypass=self.compare_attention == 'isab_bypass')
+                    for _ in range(configs.e_layers)],
+                norm_layer=nn.LayerNorm(configs.d_model))
+        elif self.compare_attention in ('luna', 'luna_bypass'):
+            self.encoder = LunaEncoder(
+                d_model=configs.d_model,
+                n_heads=configs.n_heads,
+                d_ff=configs.d_ff,
+                num_layers=configs.e_layers,
+                rank=configs.attn_rank,
+                dropout=configs.dropout,
+                activation=configs.activation,
+                time_tokens=configs.comparison_time_tokens,
+                bypass=self.compare_attention == 'luna_bypass')
+        else:
+            self.encoder = Encoder(
+                [
+                    EncoderLayer(
+                        AttentionLayer(
+                            make_inner_attention(), configs.d_model, configs.n_heads),
+                        configs.d_model,
+                        configs.d_ff,
+                        dropout=configs.dropout,
+                        activation=configs.activation
+                    ) for l in range(configs.e_layers)
+                ],
+                norm_layer=torch.nn.LayerNorm(configs.d_model)
+            )
         self.projector = nn.Linear(configs.d_model, configs.pred_len, bias=True)
 
     def _inner_attentions(self):
