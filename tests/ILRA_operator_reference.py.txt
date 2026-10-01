@@ -13,7 +13,7 @@ class InducedVariateAttention(nn.Module):
 
     def __init__(self, rank, n_heads, d_head, time_tokens=0,
                  attention_dropout=0.1, output_attention=False,
-                 gate_init=1.0):
+                 gate_init=1.0, gate_mode='learnable'):
         super(InducedVariateAttention, self).__init__()
         if rank <= 0:
             raise ValueError('rank must be positive')
@@ -21,12 +21,15 @@ class InducedVariateAttention(nn.Module):
             raise ValueError('n_heads and d_head must be positive')
         if time_tokens < 0:
             raise ValueError('time_tokens cannot be negative')
+        if gate_mode not in ('learnable', 'fixed'):
+            raise ValueError("gate_mode must be 'learnable' or 'fixed'")
 
         self.rank = int(rank)
         self.n_heads = int(n_heads)
         self.d_head = int(d_head)
         self.time_tokens = int(time_tokens)
         self.output_attention = output_attention
+        self.gate_mode = gate_mode
         self.dropout = nn.Dropout(attention_dropout)
 
         self.inducing_queries = nn.Parameter(
@@ -38,9 +41,13 @@ class InducedVariateAttention(nn.Module):
 
         # A direct gate permits a stable warm start from a dense checkpoint.
         # gate_init=1 is appropriate for training the architecture from scratch.
-        self.output_gate = nn.Parameter(
-            torch.full((self.n_heads,), float(gate_init))
-        )
+        # For component ablation, fixed mode keeps the exact same multiplicative
+        # path but removes gate learning: g_h == gate_init for the whole run.
+        gate = torch.full((self.n_heads,), float(gate_init))
+        if self.gate_mode == 'learnable':
+            self.output_gate = nn.Parameter(gate)
+        else:
+            self.register_buffer('output_gate', gate)
 
     def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
         if attn_mask is not None:

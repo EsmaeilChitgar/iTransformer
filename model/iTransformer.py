@@ -41,7 +41,8 @@ class Model(nn.Module):
                     time_tokens=configs.attn_time_tokens,
                     attention_dropout=configs.dropout,
                     output_attention=configs.output_attention,
-                    gate_init=configs.attn_gate_init
+                    gate_init=configs.attn_gate_init,
+                    gate_mode=getattr(configs, 'attn_gate_mode', 'learnable')
                 )
             return FullAttention(
                 False,

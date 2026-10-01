@@ -96,6 +96,9 @@ if __name__ == '__main__':
                         help='number of trailing time-feature tokens kept exact')
     parser.add_argument('--attn_gate_init', type=float, default=1.0,
                         help='initial induced-attention residual gate')
+    parser.add_argument('--attn_gate_mode', type=str, default='learnable',
+                        choices=['learnable', 'fixed'],
+                        help='learn the per-head ILRA gate or keep it fixed at attn_gate_init')
     parser.add_argument('--warm_start_checkpoint', type=str, default='',
                         help='dense checkpoint copied into compatible student parameters')
 
